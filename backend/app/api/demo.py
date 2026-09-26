@@ -1,18 +1,30 @@
-from sqlalchemy import desc, select
-from app.db.event import Event
-"""Simulation-only failure-injection API (demo scope).
+"""Simulation-only API (demo scope).
 
-POST /demo/nodes/{node_id}/fail intentionally fails an exam node for the
-hackathon demo. This is NOT a production admin API: there is no auth by
-design, and every injection is permanently recorded in the Event ledger
-with simulation=true in its payload.
+Endpoints:
+- POST /demo/scenario/create -- provision one exam + node + candidates +
+  questions for the resilience walkthrough. Deliberately creates NO sessions:
+  the demo must call POST /session/start so the normal SESSION_STARTED event
+  path is exercised.
+- POST /demo/nodes/{node_id}/fail -- intentionally fails an exam node.
+- POST /demo/nodes/{node_id}/recover -- recovers a failed node.
+- POST /demo/tamper -- corrupts the latest event so audit verification can be
+  demonstrated.
+- GET /demo/overview/{exam_id} -- read-only operational snapshot (never calls
+  Gemini).
+
+This is NOT a production admin API: there is no auth by design, and every
+injection is permanently recorded in the Event ledger with simulation=true in
+its payload. Nothing here deletes or resets existing data.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session as DbSession
 
 from app.api.errors import InvalidNodeState, NotFound, SessionApiError
 from app.api.schemas import (
+    DemoOverviewResponse,
+    DemoScenarioCreateResponse,
     DemoTamperRequest,
     DemoTamperResponse,
     FailNodeRequest,
@@ -21,9 +33,27 @@ from app.api.schemas import (
     RecoverNodeResponse,
 )
 from app.core.database import get_db
-from app.services import failure_service, recovery_service
+from app.db.event import Event
+from app.services import demo_scenario_service, failure_service, recovery_service
 
 router = APIRouter(prefix="/demo", tags=["demo"])
+
+
+@router.post("/scenario/create", response_model=DemoScenarioCreateResponse)
+def create_demo_scenario(db: DbSession = Depends(get_db)):
+    """Provision a demo scenario. Creates no sessions and no events."""
+    return DemoScenarioCreateResponse(
+        **demo_scenario_service.create_demo_scenario(db)
+    )
+
+
+@router.get("/overview/{exam_id}", response_model=DemoOverviewResponse)
+def get_demo_overview(exam_id: int, db: DbSession = Depends(get_db)):
+    """Read-only operational snapshot of one exam. Never calls Gemini."""
+    overview = demo_scenario_service.build_overview(db, exam_id)
+    if overview is None:
+        raise HTTPException(status_code=404, detail=f"Exam {exam_id} not found")
+    return DemoOverviewResponse(**overview)
 
 
 @router.post("/nodes/{node_id}/fail", response_model=FailNodeResponse)

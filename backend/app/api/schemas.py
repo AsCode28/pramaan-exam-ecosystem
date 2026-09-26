@@ -264,3 +264,61 @@ class AIAnalysisResponse(BaseModel):
     recommended_response: str
     evidence_refs: list[int]
     generated_at: datetime
+
+
+class DemoScenarioCreateResponse(BaseModel):
+    """One demo exam with exactly one node, 3 candidates and 3 questions.
+
+    No sessions are created: the demo must call POST /session/start so the
+    normal SESSION_STARTED event path is exercised.
+    """
+
+    exam_id: int
+    node_id: int
+    candidate_ids: list[int]
+    question_ids: list[int]
+
+
+class DemoOverviewExam(BaseModel):
+    id: int
+    title: str
+    status: str
+    start_time: datetime
+    end_time: datetime
+
+
+class DemoOverviewNode(BaseModel):
+    id: int
+    exam_id: int
+    status: str
+
+
+class DemoOverviewSession(BaseModel):
+    id: int
+    candidate_id: int
+    node_id: int
+    status: str
+    last_activity: datetime | None
+
+
+class DemoOverviewIncident(BaseModel):
+    id: int
+    severity: str
+    status: str
+    root_cause_summary: str | None
+    created_from_event_id: int | None
+    detected_at: datetime
+    resolved_at: datetime | None
+    affected_session_ids: list[int]
+    evidence_event_sequence_nos: list[int]
+
+
+class DemoOverviewResponse(BaseModel):
+    """Read-only operational snapshot. Never calls Gemini."""
+
+    exam: DemoOverviewExam
+    nodes: list[DemoOverviewNode]
+    sessions: list[DemoOverviewSession]
+    incidents: list[DemoOverviewIncident]
+    audit_status: AuditVerifyResponse
+    latest_event_sequence_no: int | None
