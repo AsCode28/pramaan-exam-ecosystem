@@ -40,7 +40,7 @@ from app.db.candidate import Candidate
 from app.db.event import Event
 from app.db.exam import Exam, Node, Question
 from app.db.session import Response, Session
-from app.services import event_ledger
+from app.services import event_ledger, response_projection
 from app.services.event_ledger import AppendResult
 
 SESSION_STARTED = "SESSION_STARTED"
@@ -73,6 +73,9 @@ def _reject_if_node_unavailable(session: Session, operation: str) -> None:
         raise NodeUnavailable(
             node_id=session.node_id, session_id=session.id, operation=operation
         )
+    if session.status == "RECOVERING" and operation == "answer":
+        # Normal answers stay closed during recovery; use reconcile instead.
+        raise InvalidState(session.status)
 
 
 def start_session(
@@ -143,27 +146,18 @@ def save_answer(
     )
     event = result.event
     try:
-        # Projection guard: only a higher sequence_no may move it forward.
-        # last_event_id stores Event.sequence_no (no Event.id column exists).
-        response = db.execute(
-            select(Response).where(
-                Response.session_id == session.id,
-                Response.question_id == question.id,
-            )
-        ).scalar_one_or_none()
-        if response is None:
-            response = Response(
-                session_id=session.id,
-                question_id=question.id,
-                current_answer=event.payload["answer"],
-                last_event_id=event.sequence_no,
-            )
-            db.add(response)
-        elif response.last_event_id is None or response.last_event_id < event.sequence_no:
-            response.current_answer = event.payload["answer"]
-            response.last_event_id = event.sequence_no
-        db.commit()
-        db.refresh(response)
+        # Shared projection helper (single source of truth for the upsert);
+        # guard: apply iff last_event_id IS NULL OR last_event_id < sequence_no.
+        response_projection.apply_answer_projection(
+            db,
+            session_id=session.id,
+            question_id=question.id,
+            answer=event.payload["answer"],
+            sequence_no=event.sequence_no,
+        )
+        response = response_projection.get_response_row(
+            db, session_id=session.id, question_id=question.id
+        )
     except Exception as exc:
         db.rollback()
         # The ANSWER_SAVED event from append_event() stands (authoritative);
@@ -201,6 +195,11 @@ def record_heartbeat(
     if not result.appended:
         # Idempotent retry: leave last_activity untouched; return the
         # already-recorded acknowledgement with current session state.
+        db.refresh(session)
+        return session, result
+    if session.status == "RECOVERING":
+        # Recovery is not write-ready: append the liveness event but do NOT
+        # advance last_activity (that would imply the session is usable).
         db.refresh(session)
         return session, result
     try:

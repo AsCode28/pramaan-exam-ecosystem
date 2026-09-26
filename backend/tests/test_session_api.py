@@ -516,4 +516,108 @@ def test_16_start_failure_leaves_no_orphan_session(client, monkeypatch):
     # Service recovers once the fault is removed.
     monkeypatch.undo()
     body = start(test_client, ids)
+
+
+def test_17_save_answer_uses_shared_projection_helper(client, monkeypatch):
+    """Task 3 answer path goes through the ONE shared projection helper."""
+    test_client, factory = client
+    ids = seed(factory)
+    body = start(test_client, ids)
+    from app.services import response_projection, session_service
+
+    calls = []
+    real = response_projection.apply_answer_projection
+
+    def spy(db, *, session_id, question_id, answer, sequence_no):
+        calls.append((session_id, question_id, answer, sequence_no))
+        return real(
+            db,
+            session_id=session_id,
+            question_id=question_id,
+            answer=answer,
+            sequence_no=sequence_no,
+        )
+
+    # Patch where session_service looks it up (module attribute).
+    monkeypatch.setattr(
+        session_service.response_projection, "apply_answer_projection", spy
+    )
+    ans = test_client.post(
+        f"/session/{body['session_id']}/answer",
+        json={
+            "question_id": ids["question_id"],
+            "answer": "4",
+            "client_event_id": "shared-1",
+        },
+    ).json()
+    assert len(calls) == 1, "shared helper must be used exactly once"
+    assert calls[0][2] == "4"
+    assert len(calls) == 1 and calls[0][3] == ans["sequence_no"]
+    db = factory()
+    try:
+        row = db.execute(
+            select(Response).where(
+                Response.session_id == body["session_id"],
+                Response.question_id == ids["question_id"],
+            )
+        ).scalar_one()
+        assert row.current_answer == "4"
+        assert row.last_event_id == ans["sequence_no"]
+    finally:
+        db.close()
+
+
+def test_18_shared_helper_guard_never_regresses(client):
+    """A stale sequence_no must not move the projection backwards.
+
+    The helper's return value means "projection confirmed up-to-date", so a
+    stale replay legitimately returns True while leaving the row untouched.
+    """
+    from app.services.response_projection import apply_answer_projection
+
+    test_client, factory = client
+    ids = seed(factory)
+    body = start(test_client, ids)
+    ans = test_client.post(
+        f"/session/{body['session_id']}/answer",
+        json={
+            "question_id": ids["question_id"],
+            "answer": "4",
+            "client_event_id": "guard-1",
+        },
+    ).json()
+    db = factory()
+    try:
+        # Replay an OLDER sequence_no with different content: no regression.
+        up_to_date = apply_answer_projection(
+            db,
+            session_id=body["session_id"],
+            question_id=ids["question_id"],
+            answer="STALE",
+            sequence_no=ans["sequence_no"] - 1,
+        )
+        assert up_to_date is True  # row is current w.r.t. the stale event
+        row = db.execute(
+            select(Response).where(
+                Response.session_id == body["session_id"],
+                Response.question_id == ids["question_id"],
+            )
+        ).scalar_one()
+        assert row.current_answer == "4"
+        assert row.last_event_id == ans["sequence_no"]
+        # A genuinely newer sequence_no advances it.
+        advanced = apply_answer_projection(
+            db,
+            session_id=body["session_id"],
+            question_id=ids["question_id"],
+            answer="NEW",
+            sequence_no=ans["sequence_no"] + 1,
+        )
+        assert advanced is True
+        db.refresh(row)
+        assert row.current_answer == "NEW"
+        assert row.last_event_id == ans["sequence_no"] + 1
+    finally:
+        db.close()
+
     assert body["status"] == "ACTIVE"

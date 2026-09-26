@@ -13,15 +13,18 @@ from app.api.errors import (
 from app.api.schemas import (
     AnswerRequest,
     AnswerResponse,
+    BufferedAnswerEvent,
     HeartbeatRequest,
     HeartbeatResponse,
+    ReconcileRequest,
+    ReconcileResponse,
     ResponseState,
     SessionStateResponse,
     StartSessionRequest,
     StartSessionResponse,
 )
 from app.core.database import get_db
-from app.services import session_service
+from app.services import recovery_service, session_service
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -110,6 +113,39 @@ def heartbeat(session_id: int, body: HeartbeatRequest, db: DbSession = Depends(g
         last_activity=session.last_activity,
         sequence_no=result.event.sequence_no,
         appended=result.appended,
+    )
+
+
+@router.post("/{session_id}/reconcile", response_model=ReconcileResponse)
+def reconcile(session_id: int, body: ReconcileRequest, db: DbSession = Depends(get_db)):
+    """Accept client-buffered ANSWER_SAVED events for a RECOVERING session."""
+    try:
+        report = recovery_service.reconcile_session(
+            db,
+            session_id=session_id,
+            items=[item.model_dump() for item in body.events],
+        )
+    except SessionApiError as exc:
+        _raise_mapped(exc)
+    except Exception as exc:
+        if getattr(exc, "projection_failed", False):
+            raise HTTPException(
+                status_code=500, detail="event stored; projection_failed"
+            )
+        raise
+    return ReconcileResponse(
+        session_id=session_id,
+        status=report["status"],
+        submitted_client_event_ids=report["submitted"],
+        acknowledged_client_event_ids=report["acknowledged"],
+        newly_reconciled_client_event_ids=report["newly"],
+        already_acknowledged_client_event_ids=report["already"],
+        missing_client_event_ids=report["missing"],
+        mismatched_client_event_ids=report["mismatched"],
+        rejected_client_event_ids=report["rejected"],
+        rejected_reasons=report["reasons"],
+        reconciliation_complete=report["complete"],
+        recovered_event_sequence_no=report["recovered_event_sequence_no"],
     )
 
 

@@ -91,3 +91,55 @@ class FailNodeResponse(BaseModel):
     affected_count: int
     event_sequence_no: int
     newly_failed: bool
+
+
+class RecoverNodeRequest(BaseModel):
+    reason: str | None = None
+
+
+class RecoverNodeResponse(BaseModel):
+    node_id: int
+    previous_status: str
+    new_status: str
+    affected_session_ids: list[int]
+    affected_count: int
+    event_sequence_no: int
+    newly_recovered: bool
+
+
+class BufferedAnswerEvent(BaseModel):
+    """One client-buffered answer; ANSWER_SAVED reconciliation only."""
+
+    client_event_id: str
+    question_id: int
+    answer: str | None = None
+    client_timestamp: datetime | None = None
+
+
+class ReconcileRequest(BaseModel):
+    events: list[BufferedAnswerEvent] = []
+
+
+class ReconcileResponse(BaseModel):
+    session_id: int
+    status: str
+    submitted_client_event_ids: list[str]
+    acknowledged_client_event_ids: list[str]
+    newly_reconciled_client_event_ids: list[str]
+    already_acknowledged_client_event_ids: list[str]
+    missing_client_event_ids: list[str]
+    mismatched_client_event_ids: list[str]
+    rejected_client_event_ids: list[str]
+    rejected_reasons: dict[str, str] = {}
+    reconciliation_complete: bool
+    recovered_event_sequence_no: int | None = None
+
+
+class FailNodeResponse(BaseModel):
+    node_id: int
+    previous_status: str
+    new_status: str
+    affected_session_ids: list[int]
+    affected_count: int
+    event_sequence_no: int
+    newly_failed: bool
