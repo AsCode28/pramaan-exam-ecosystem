@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.sessions import router
 from app.core.database import init_db
 
 
@@ -18,3 +19,6 @@ app = FastAPI(title="Pramaan Exam Ecosystem", lifespan=lifespan)
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+app.include_router(router)
