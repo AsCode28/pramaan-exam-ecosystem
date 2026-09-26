@@ -197,3 +197,70 @@ class DemoTamperResponse(BaseModel):
     tampered_sequence_no: int
     field: str
     detail: str
+
+
+class EvidenceEventDetail(BaseModel):
+    """One grounded evidence event, exactly as stored in the ledger."""
+
+    sequence_no: int
+    event_type: str
+    exam_id: int | None
+    session_id: int | None
+    candidate_id: int | None
+    node_id: int | None
+    payload: dict | None
+    server_timestamp: datetime
+    previous_hash: str | None
+    hash: str | None
+
+
+class IncidentEvidenceSession(BaseModel):
+    id: int
+    exam_id: int
+    candidate_id: int
+    node_id: int
+    status: str
+    started_at: datetime
+    submitted_at: datetime | None
+    last_activity: datetime | None
+
+
+class IncidentEvidenceNode(BaseModel):
+    id: int
+    exam_id: int
+    status: str
+
+
+class IncidentEvidenceSummary(BaseModel):
+    id: int
+    exam_id: int
+    severity: str
+    status: str
+    root_cause_summary: str | None
+    created_from_event_id: int | None
+    detected_at: datetime
+    resolved_at: datetime | None
+
+
+class IncidentEvidenceResponse(BaseModel):
+    """Read-only evidence package for one incident."""
+
+    incident: IncidentEvidenceSummary
+    affected_session_ids: list[int]
+    affected_node_ids: list[int]
+    sessions: list[IncidentEvidenceSession]
+    nodes: list[IncidentEvidenceNode]
+    evidence_events: list[EvidenceEventDetail]
+    recovery_facts: dict
+    audit_status: AuditVerifyResponse
+
+
+class AIAnalysisResponse(BaseModel):
+    """Explanatory-only grounded analysis. Never mutates ledger state."""
+
+    incident_id: int
+    likely_cause: str
+    impact_summary: str
+    recommended_response: str
+    evidence_refs: list[int]
+    generated_at: datetime
