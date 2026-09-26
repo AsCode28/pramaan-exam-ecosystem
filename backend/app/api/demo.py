@@ -1,3 +1,5 @@
+from sqlalchemy import desc, select
+from app.db.event import Event
 """Simulation-only failure-injection API (demo scope).
 
 POST /demo/nodes/{node_id}/fail intentionally fails an exam node for the
@@ -11,6 +13,8 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.api.errors import InvalidNodeState, NotFound, SessionApiError
 from app.api.schemas import (
+    DemoTamperRequest,
+    DemoTamperResponse,
     FailNodeRequest,
     FailNodeResponse,
     RecoverNodeRequest,
@@ -76,4 +80,62 @@ def recover_node(
         affected_count=len(affected_ids),
         event_sequence_no=result.event.sequence_no,
         newly_recovered=newly_recovered,
+    )
+
+
+@router.post("/tamper", response_model=DemoTamperResponse)
+def tamper_latest_event(body: DemoTamperRequest, db: DbSession = Depends(get_db)):
+    """Demo-only simulation: tampered mutation of the latest event in the ledger.
+
+    Strictly simulation-scoped: only target="latest" is accepted, resolving
+    directly to the highest Event.sequence_no. Arbitrary sequence numbers cannot
+    be supplied. Field must be "payload", "hash", or "previous_hash".
+    """
+    if body.target != "latest":
+        raise HTTPException(
+            status_code=400,
+            detail="Demo tamper only supports target='latest'",
+        )
+
+    valid_fields = ("payload", "hash", "previous_hash")
+    if body.field not in valid_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid field '{body.field}'. Must be one of {valid_fields}",
+        )
+
+    latest_event = db.execute(
+        select(Event).order_by(desc(Event.sequence_no)).limit(1)
+    ).scalar_one_or_none()
+
+    if latest_event is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Cannot tamper empty ledger: no events found",
+        )
+
+    if body.field == "payload":
+        current = latest_event.payload if isinstance(latest_event.payload, dict) else {}
+        new_payload = dict(current)
+        new_payload["__demo_tampered__"] = True
+        latest_event.payload = new_payload
+        detail = f"Payload modified for sequence {latest_event.sequence_no}"
+    elif body.field == "hash":
+        orig = latest_event.hash or ""
+        flip = "1" if orig.endswith("0") else "0"
+        latest_event.hash = (orig[:-1] + flip) if orig else "0" * 64
+        detail = f"Hash modified for sequence {latest_event.sequence_no}"
+    elif body.field == "previous_hash":
+        orig = latest_event.previous_hash or ""
+        flip = "1" if orig.endswith("0") else "0"
+        latest_event.previous_hash = (orig[:-1] + flip) if orig else "0" * 64
+        detail = f"previous_hash modified for sequence {latest_event.sequence_no}"
+
+    db.commit()
+    db.refresh(latest_event)
+
+    return DemoTamperResponse(
+        tampered_sequence_no=latest_event.sequence_no,
+        field=body.field,
+        detail=detail,
     )

@@ -179,3 +179,21 @@ class IncidentEvaluateResponse(BaseModel):
     evaluated_at: datetime
     incidents: list[IncidentResponse]
 
+
+
+class AuditVerifyResponse(BaseModel):
+    valid: bool
+    events_checked: int
+    first_broken_sequence_no: int | None
+    failure_reason: str | None
+
+
+class DemoTamperRequest(BaseModel):
+    target: str = "latest"
+    field: str  # "payload" | "hash" | "previous_hash"
+
+
+class DemoTamperResponse(BaseModel):
+    tampered_sequence_no: int
+    field: str
+    detail: str
