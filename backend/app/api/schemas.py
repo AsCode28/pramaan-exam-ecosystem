@@ -77,3 +77,17 @@ class SessionStateResponse(BaseModel):
     last_activity: datetime | None
     responses: list[ResponseState]
     acknowledged_client_event_ids: list[str]
+
+
+class FailNodeRequest(BaseModel):
+    reason: str | None = None
+
+
+class FailNodeResponse(BaseModel):
+    node_id: int
+    previous_status: str
+    new_status: str
+    affected_session_ids: list[int]
+    affected_count: int
+    event_sequence_no: int
+    newly_failed: bool

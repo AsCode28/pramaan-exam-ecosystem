@@ -3,7 +3,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DbSession
 
-from app.api.errors import ForeignExamQuestion, InvalidState, NotFound, SessionApiError
+from app.api.errors import (
+    ForeignExamQuestion,
+    InvalidState,
+    NodeUnavailable,
+    NotFound,
+    SessionApiError,
+)
 from app.api.schemas import (
     AnswerRequest,
     AnswerResponse,
@@ -23,6 +29,9 @@ router = APIRouter(prefix="/session", tags=["session"])
 def _raise_mapped(exc: SessionApiError) -> None:
     if isinstance(exc, NotFound):
         raise HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, NodeUnavailable):
+        # Infrastructure-level outage: the client should retry after recovery.
+        raise HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, InvalidState):
         raise HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, ForeignExamQuestion):

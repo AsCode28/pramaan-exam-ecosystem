@@ -35,7 +35,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
-from app.api.errors import ForeignExamQuestion, InvalidState, NotFound
+from app.api.errors import ForeignExamQuestion, InvalidState, NotFound, NodeUnavailable
 from app.db.candidate import Candidate
 from app.db.event import Event
 from app.db.exam import Exam, Node, Question
@@ -67,6 +67,14 @@ class NodeExamMismatch(ForeignExamQuestion):
         Exception.__init__(self, "node belongs to a different exam")
 
 
+def _reject_if_node_unavailable(session: Session, operation: str) -> None:
+    """Backend-authoritative failed-node guard (runs before append_event())."""
+    if session.status == "DISCONNECTED" or session.node.status == "FAILED":
+        raise NodeUnavailable(
+            node_id=session.node_id, session_id=session.id, operation=operation
+        )
+
+
 def start_session(
     db: DbSession, *, exam_id: int, candidate_id: int, node_id: int
 ) -> tuple[Session, AppendResult]:
@@ -76,6 +84,9 @@ def start_session(
     node = _get_or_404(db, Node, node_id, "node")
     if node.exam_id != exam.id:
         raise NodeExamMismatch()
+    if node.status == "FAILED":
+        # Never start a session on a known-dead node.
+        raise NodeUnavailable(node_id=node.id, session_id=None, operation="start")
     now = _utcnow_naive()
     session = Session(
         exam_id=exam.id,
@@ -112,6 +123,7 @@ def save_answer(
 ) -> tuple[Response, AppendResult]:
     """Append ANSWER_SAVED, then upsert the Response projection."""
     session = _get_or_404(db, Session, session_id, "session")
+    _reject_if_node_unavailable(session, "answer")
     question = _get_or_404(db, Question, question_id, "question")
     if question.exam_id != session.exam_id:
         raise ForeignExamQuestion()
@@ -174,6 +186,7 @@ def record_heartbeat(
     existing event acknowledgement and existing session state are returned.
     """
     session = _get_or_404(db, Session, session_id, "session")
+    _reject_if_node_unavailable(session, "heartbeat")
     result = event_ledger.append_event(
         db,
         event_type=HEARTBEAT,

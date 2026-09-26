@@ -1,7 +1,7 @@
-"""Domain errors for the session API.
+"""Domain errors for the session/demo APIs.
 
-Raised by ``app.services.session_service``; mapped to HTTP status codes by
-``app.api.sessions``. Keeping them here avoids an services -> api import.
+Raised by service-layer code; mapped to HTTP status codes by the routers.
+Keeping them here avoids a services -> api import.
 """
 
 
@@ -29,4 +29,28 @@ class InvalidState(SessionApiError):
 
     def __init__(self, status: str):
         super().__init__(f"session status {status!r} does not allow this operation")
+        self.status = status
+
+
+class NodeUnavailable(SessionApiError):
+    """Assigned node is FAILED; the session cannot accept the operation."""
+
+    def __init__(self, node_id: int, session_id: int | None, operation: str):
+        super().__init__(
+            f"assigned node {node_id} is FAILED; session {session_id} "
+            f"cannot accept {operation}"
+        )
+        self.node_id = node_id
+        self.session_id = session_id
+        self.operation = operation
+
+
+class InvalidNodeState(SessionApiError):
+    """Node is in a status that cannot transition to FAILED."""
+
+    def __init__(self, node_id: int, status: str):
+        super().__init__(
+            f"node {node_id} status {status!r} cannot transition to FAILED"
+        )
+        self.node_id = node_id
         self.status = status
