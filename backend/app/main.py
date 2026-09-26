@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.demo import router as demo_router
+from app.api.incidents import router as incident_router
 from app.api.sessions import router
 from app.core.database import init_db
 
@@ -24,3 +25,4 @@ def health_check():
 
 app.include_router(router)
 app.include_router(demo_router)
+app.include_router(incident_router)

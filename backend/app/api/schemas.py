@@ -143,3 +143,39 @@ class FailNodeResponse(BaseModel):
     affected_count: int
     event_sequence_no: int
     newly_failed: bool
+
+
+class IncidentResponse(BaseModel):
+    """One incident plus the ledger evidence that grounds it.
+
+    ``created_from_event_id`` is an ``Event.sequence_no`` (the events table has
+    no ``id`` column); it anchors the incident episode and, for NODE incidents,
+    resolves the node through the origin event.
+    """
+
+    id: int
+    exam_id: int
+    severity: str
+    status: str
+    root_cause_summary: str | None = None
+    created_from_event_id: int | None = None
+    detected_at: datetime
+    resolved_at: datetime | None = None
+    affected_session_ids: list[int] = []
+    evidence_event_sequence_nos: list[int] = []
+
+
+class IncidentListResponse(BaseModel):
+    incidents: list[IncidentResponse]
+    total: int
+
+
+class IncidentEvaluateRequest(BaseModel):
+    exam_id: int
+
+
+class IncidentEvaluateResponse(BaseModel):
+    exam_id: int
+    evaluated_at: datetime
+    incidents: list[IncidentResponse]
+
