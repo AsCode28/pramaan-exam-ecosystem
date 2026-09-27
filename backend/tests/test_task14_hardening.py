@@ -261,6 +261,118 @@ def test_health_unknown_node_404(client):
 
 
 
+
+# --------------------------------------------------------------------------- #
+# 5. Node health embedded in the demo overview
+# --------------------------------------------------------------------------- #
+
+
+def _overview_nodes(client, exam_id):
+    r = client.get(f"/demo/overview/{exam_id}")
+    assert r.status_code == 200, r.text
+    return r.json()["nodes"]
+
+
+def test_overview_nodes_include_health(client, factory):
+    """Every overview node carries the nested health signal."""
+    ids = seed_node(factory)
+    nodes = _overview_nodes(client, ids["exam_id"])
+
+    assert len(nodes) == 1
+    health = nodes[0]["health"]
+    assert health["node_id"] == ids["node_id"]
+    assert health["health_state"] == "HEALTHY"
+    assert health["early_warning"] is False
+    assert health["threshold_seconds"] == demo_config.DEFAULT_HEARTBEAT_STALE_SECONDS
+    assert "reason" in health
+    # Existing node fields are preserved.
+    assert nodes[0]["id"] == ids["node_id"]
+    assert nodes[0]["exam_id"] == ids["exam_id"]
+    assert nodes[0]["status"] == "HEALTHY"
+
+
+def test_overview_health_fresh_heartbeat_is_healthy(client, factory):
+    """A fresh heartbeat surfaces HEALTHY in the overview."""
+    ids = seed_node(factory)
+    add_heartbeat(factory, ids["node_id"], age_seconds=1, exam_id=ids["exam_id"])
+
+    health = _overview_nodes(client, ids["exam_id"])[0]["health"]
+    assert health["health_state"] == "HEALTHY"
+    assert health["early_warning"] is False
+    assert health["last_heartbeat_server_timestamp"] is not None
+    assert health["heartbeat_age_seconds"] < demo_config.DEFAULT_HEARTBEAT_STALE_SECONDS
+
+
+def test_overview_health_stale_heartbeat_is_degraded(client, factory):
+    """A stale heartbeat surfaces DEGRADED with early_warning=true."""
+    threshold = demo_config.DEFAULT_HEARTBEAT_STALE_SECONDS
+    ids = seed_node(factory)
+    add_heartbeat(
+        factory, ids["node_id"], age_seconds=threshold + 30, exam_id=ids["exam_id"]
+    )
+
+    health = _overview_nodes(client, ids["exam_id"])[0]["health"]
+    assert health["health_state"] == "DEGRADED"
+    assert health["early_warning"] is True
+    assert health["heartbeat_age_seconds"] > threshold
+
+
+def test_overview_health_failed_node_reports_failed(client, factory):
+    """A FAILED node reports FAILED in the overview health signal."""
+    ids = seed_node(factory)
+    add_heartbeat(
+        factory,
+        ids["node_id"],
+        age_seconds=demo_config.DEFAULT_HEARTBEAT_STALE_SECONDS + 60,
+        exam_id=ids["exam_id"],
+    )
+    client.post(f"/demo/nodes/{ids['node_id']}/fail", json={})
+
+    node = _overview_nodes(client, ids["exam_id"])[0]
+    assert node["status"] == "FAILED"
+    assert node["health"]["health_state"] == "FAILED"
+    assert node["health"]["early_warning"] is False
+
+
+def test_overview_health_matches_the_health_endpoint(client, factory):
+    """The overview reuses the same service, so both agree exactly."""
+    ids = seed_node(factory)
+    add_heartbeat(
+        factory,
+        ids["node_id"],
+        age_seconds=demo_config.DEFAULT_HEARTBEAT_STALE_SECONDS + 5,
+        exam_id=ids["exam_id"],
+    )
+    from_endpoint = client.get(f"/demo/nodes/{ids['node_id']}/health").json()
+    from_overview = _overview_nodes(client, ids["exam_id"])[0]["health"]
+
+    for key in (
+        "node_id",
+        "health_state",
+        "last_heartbeat_server_timestamp",
+        "threshold_seconds",
+        "reason",
+        "early_warning",
+    ):
+        assert from_overview[key] == from_endpoint[key], key
+    # The age is recomputed per call, so allow a small drift rather than equality.
+    assert abs(
+        from_overview["heartbeat_age_seconds"] - from_endpoint["heartbeat_age_seconds"]
+    ) < 5
+
+
+def test_overview_remains_read_only_with_health(client, factory):
+    """Polling the overview still appends nothing to the ledger."""
+    ids = seed_node(factory)
+    add_heartbeat(factory, ids["node_id"], age_seconds=2, exam_id=ids["exam_id"])
+    before = client.post("/audit/verify").json()["events_checked"]
+
+    for _ in range(3):
+        client.get(f"/demo/overview/{ids['exam_id']}")
+
+    assert client.post("/audit/verify").json()["events_checked"] == before
+
+
 # --------------------------------------------------------------------------- #
 # 2. Gemini timeout and provider failure hardening
 # --------------------------------------------------------------------------- #
