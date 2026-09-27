@@ -32,6 +32,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session as DbSession
 
+from app.core.demo_config import gemini_timeout_ms
 from app.db.incident import Incident
 from app.services import evidence_service
 
@@ -146,10 +147,28 @@ def _strip_code_fence(text: str) -> str:
     return body.strip()
 
 
-def _call_gemini(prompt: str) -> Any:
-    """Invoke the official google-genai SDK. Isolated so tests can mock it."""
-    from google import genai
+def get_timeout_ms() -> int:
+    """Finite, configurable Gemini request timeout in milliseconds.
 
+    The installed ``google-genai`` SDK (2.25.0) carries the timeout on
+    ``types.HttpOptions.timeout``, which follows httpx semantics and is
+    therefore expressed in MILLISECONDS. It is never left unset/infinite, so a
+    hung provider can never pin an API worker forever.
+    """
+    return gemini_timeout_ms()
+
+
+def _call_gemini(prompt: str) -> Any:
+    """Invoke the official google-genai SDK. Isolated so tests can mock it.
+
+    The request timeout is applied through the SDK's supported
+    ``http_options`` mechanism, so it bounds the real network call rather than
+    only the surrounding Python code.
+    """
+    from google import genai
+    from google.genai import types
+
+    timeout_ms = get_timeout_ms()
     client = genai.Client(api_key=get_api_key())
     try:
         return client.models.generate_content(
@@ -158,10 +177,13 @@ def _call_gemini(prompt: str) -> Any:
             config={
                 "response_mime_type": "application/json",
                 "response_schema": IncidentAnalysis,
+                "http_options": types.HttpOptions(timeout=timeout_ms),
             },
         )
     except Exception as exc:  # SDK, network, auth, timeout, quota, ...
-        raise GeminiRequestError(f"Gemini request failed: {exc}") from exc
+        raise GeminiRequestError(
+            f"Gemini request failed after a {timeout_ms}ms timeout budget: {exc}"
+        ) from exc
 
 
 def _parse_and_validate(text: str) -> IncidentAnalysis:

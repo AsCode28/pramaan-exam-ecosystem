@@ -25,20 +25,46 @@ from app.api.errors import InvalidNodeState, NotFound, SessionApiError
 from app.api.http_errors import raise_mapped, refresh_incidents
 from app.api.schemas import (
     DemoOverviewResponse,
+    DemoResetResponse,
     DemoScenarioCreateResponse,
     DemoTamperRequest,
     DemoTamperResponse,
     FailNodeRequest,
     FailNodeResponse,
+    NodeHealthResponse,
     RecoverNodeRequest,
     RecoverNodeResponse,
 )
 from app.core.database import get_db
+from app.core.demo_config import is_demo_mode
 from app.db.event import Event
 from app.db.exam import Exam
-from app.services import demo_scenario_service, failure_service, recovery_service
+from app.services import (
+    demo_reset_service,
+    demo_scenario_service,
+    failure_service,
+    health_service,
+    recovery_service,
+)
 
 router = APIRouter(prefix="/demo", tags=["demo"])
+
+
+def _require_demo_mode() -> None:
+    """Reject a destructive demo operation unless DEMO_MODE is enabled.
+
+    DEMO_MODE defaults to OFF, so a non-demo deployment can never inject a
+    failure, corrupt the ledger, or wipe its database over HTTP. Read-only
+    monitoring endpoints are deliberately NOT gated.
+    """
+    if not is_demo_mode():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "destructive demo operations are disabled; set DEMO_MODE=true "
+                "to enable failure injection, tamper and reset"
+            ),
+        )
 
 
 @router.post("/scenario/create", response_model=DemoScenarioCreateResponse)
@@ -47,6 +73,25 @@ def create_demo_scenario(db: DbSession = Depends(get_db)):
     return DemoScenarioCreateResponse(
         **demo_scenario_service.create_demo_scenario(db)
     )
+
+
+@router.post("/reset", response_model=DemoResetResponse)
+def reset_demo(db: DbSession = Depends(get_db)):
+    """DESTRUCTIVE. Drop and recreate every table (local SQLite, demo only)."""
+    _require_demo_mode()
+    try:
+        return DemoResetResponse(**demo_reset_service.reset_demo_database(db))
+    except demo_reset_service.DemoResetError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@router.get("/nodes/{node_id}/health", response_model=NodeHealthResponse)
+def get_node_health(node_id: int, db: DbSession = Depends(get_db)):
+    """Read-only early-warning signal. Never mutates state, never gated."""
+    signal = health_service.node_health(db, node_id)
+    if signal is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+    return NodeHealthResponse(**signal.to_dict())
 
 
 @router.get("/overview/{exam_id}", response_model=DemoOverviewResponse)
@@ -60,6 +105,7 @@ def get_demo_overview(exam_id: int, db: DbSession = Depends(get_db)):
 
 @router.post("/nodes/{node_id}/fail", response_model=FailNodeResponse)
 def fail_node(node_id: int, body: FailNodeRequest, db: DbSession = Depends(get_db)):
+    _require_demo_mode()
     try:
         node, affected_ids, result, newly_failed = failure_service.fail_node(
             db, node_id=node_id, reason=body.reason
@@ -94,6 +140,7 @@ def recover_node(
     node_id: int, body: RecoverNodeRequest, db: DbSession = Depends(get_db)
 ):
     """Demo-only recovery: FAILED node -> HEALTHY, sessions -> RECOVERING."""
+    _require_demo_mode()
     try:
         node, affected_ids, result, newly_recovered = recovery_service.recover_node(
             db, node_id=node_id, reason=body.reason
@@ -131,6 +178,7 @@ def tamper_latest_event(body: DemoTamperRequest, db: DbSession = Depends(get_db)
     directly to the highest Event.sequence_no. Arbitrary sequence numbers cannot
     be supplied. Field must be "payload", "hash", or "previous_hash".
     """
+    _require_demo_mode()
     if body.target != "latest":
         raise HTTPException(
             status_code=400,

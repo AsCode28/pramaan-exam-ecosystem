@@ -207,6 +207,30 @@ class DemoTamperResponse(BaseModel):
     detail: str
 
 
+class NodeHealthResponse(BaseModel):
+    """Read-only early-warning signal derived from heartbeat evidence.
+
+    Never mutates state. Freshness comes from the authoritative
+    ``Event.server_timestamp``; ``client_timestamp`` is never used.
+    """
+
+    node_id: int
+    health_state: str
+    last_heartbeat_server_timestamp: datetime | None
+    heartbeat_age_seconds: float | None
+    threshold_seconds: int
+    reason: str
+    early_warning: bool
+
+
+class DemoResetResponse(BaseModel):
+    """Explicit, destructive, demo-only reset report."""
+
+    reset: bool
+    database_scheme: str
+    tables_recreated: list[str]
+
+
 class EvidenceEventDetail(BaseModel):
     """One grounded evidence event, exactly as stored in the ledger."""
 

@@ -7,7 +7,8 @@ audit verification -> evidence -> (optional) grounded AI analysis -> overview.
 
 The preflight stage refuses to run unless the ledger is empty and valid, so
 the demo always validates a pristine, fully-owned append-only chain. Start the
-backend with a fresh ``backend/pramaan.db``.
+backend with a fresh ``backend/pramaan.db``, or repeat the walkthrough by
+passing ``--reset-demo`` with ``DEMO_MODE=true`` on the backend.
 
 This runner is intentionally black-box: it uses ONLY the public HTTP API.
 It never imports the application, never opens the database and never calls a
@@ -470,12 +471,36 @@ def stage_overview(client: DemoClient, scenario: dict, sessions: list[dict]) -> 
 
 
 
-def run(base_url: str, skip_ai: bool) -> None:
+def stage_reset(client: DemoClient) -> None:
+    """Optional, explicitly requested destructive reset before preflight.
+
+    Only runs when the operator passes --reset-demo. Nothing is ever reset
+    automatically: without the flag the preflight below refuses to run against a
+    non-empty ledger instead.
+    """
+    report = client.post("/demo/reset")
+    require_fields(report, ["reset", "database_scheme"], "demo/reset")
+    require(
+        report["reset"] is True,
+        f"demo/reset did not report success: {report}",
+    )
+    require(
+        report["database_scheme"] == "sqlite",
+        f"demo/reset refused a non-SQLite database: {report}",
+    )
+    ok(f"database reset ({report['database_scheme']}), tables recreated")
+
+
+def run(base_url: str, skip_ai: bool, reset_demo: bool = False) -> None:
     """Execute the full walkthrough, validating every stage."""
     client = DemoClient(base_url)
 
-    stage(1, "Preflight: require a pristine ledger")
-    stage_preflight(client)
+    if reset_demo:
+        stage(1, "Reset demo database (explicitly requested)")
+        stage_reset(client)
+    else:
+        stage(1, "Preflight: require a pristine ledger")
+        stage_preflight(client)
 
     stage(2, "Create demo scenario")
     scenario = stage_create_scenario(client)
@@ -535,14 +560,24 @@ def main(argv: list[str] | None = None) -> int:
             "GEMINI_API_KEY configured."
         ),
     )
+    parser.add_argument(
+        "--reset-demo",
+        action="store_true",
+        help=(
+            "DESTRUCTIVE: call POST /demo/reset first so the walkthrough can be "
+            "repeated without manually deleting the database. Requires "
+            "DEMO_MODE=true on the backend. Never happens automatically."
+        ),
+    )
     args = parser.parse_args(argv)
 
     print("PRAMAAN DEMO WALKTHROUGH")
     print(f"    base-url : {args.base_url}")
     print(f"    ai stage : {'skipped' if args.skip_ai else 'enabled'}")
+    print(f"    reset    : {'requested (DESTRUCTIVE)' if args.reset_demo else 'no'}")
 
     try:
-        run(args.base_url, args.skip_ai)
+        run(args.base_url, args.skip_ai, reset_demo=args.reset_demo)
     except DemoFailure as exc:
         print(f"\nPRAMAAN DEMO FAILED: {exc}", file=sys.stderr)
         return 1

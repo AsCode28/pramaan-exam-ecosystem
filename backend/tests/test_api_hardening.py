@@ -613,7 +613,9 @@ EXPECTED_OPERATIONS = {
     ("/incident/{incident_id}/analyze", "post"),
     ("/demo/incidents/evaluate", "post"),
     ("/demo/scenario/create", "post"),
+    ("/demo/reset", "post"),
     ("/demo/overview/{exam_id}", "get"),
+    ("/demo/nodes/{node_id}/health", "get"),
     ("/demo/nodes/{node_id}/fail", "post"),
     ("/demo/nodes/{node_id}/recover", "post"),
     ("/demo/tamper", "post"),
@@ -644,6 +646,8 @@ EXPECTED_SCHEMAS = {
     "DemoTamperResponse",
     "DemoScenarioCreateResponse",
     "DemoOverviewResponse",
+    "NodeHealthResponse",
+    "DemoResetResponse",
     "AuditVerifyResponse",
 }
 
