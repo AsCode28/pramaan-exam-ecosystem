@@ -66,8 +66,9 @@ def fail_node(node_id: int, body: FailNodeRequest, db: DbSession = Depends(get_d
         raise HTTPException(status_code=404, detail=str(exc))
     except InvalidNodeState as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except SessionApiError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    except SessionApiError:
+        # Unexpected domain failure: never leak the internal message.
+        raise HTTPException(status_code=500, detail="internal error")
     return FailNodeResponse(
         node_id=node.id,
         previous_status=(
@@ -96,8 +97,9 @@ def recover_node(
         raise HTTPException(status_code=404, detail=str(exc))
     except InvalidNodeState as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except SessionApiError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    except SessionApiError:
+        # Unexpected domain failure: never leak the internal message.
+        raise HTTPException(status_code=500, detail="internal error")
     return RecoverNodeResponse(
         node_id=node.id,
         previous_status=(

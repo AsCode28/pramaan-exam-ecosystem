@@ -11,7 +11,13 @@ The projection guard is ``Response.last_event_id < Event.sequence_no``.
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class HealthResponse(BaseModel):
+    """Liveness probe. Intentionally minimal."""
+
+    status: str
 
 
 class StartSessionRequest(BaseModel):
@@ -117,7 +123,9 @@ class BufferedAnswerEvent(BaseModel):
 
 
 class ReconcileRequest(BaseModel):
-    events: list[BufferedAnswerEvent] = []
+    # default_factory (not a shared []) so one request can never mutate the
+    # default seen by the next one.
+    events: list[BufferedAnswerEvent] = Field(default_factory=list)
 
 
 class ReconcileResponse(BaseModel):
@@ -130,7 +138,7 @@ class ReconcileResponse(BaseModel):
     missing_client_event_ids: list[str]
     mismatched_client_event_ids: list[str]
     rejected_client_event_ids: list[str]
-    rejected_reasons: dict[str, str] = {}
+    rejected_reasons: dict[str, str] = Field(default_factory=dict)
     reconciliation_complete: bool
     recovered_event_sequence_no: int | None = None
 
@@ -161,8 +169,8 @@ class IncidentResponse(BaseModel):
     created_from_event_id: int | None = None
     detected_at: datetime
     resolved_at: datetime | None = None
-    affected_session_ids: list[int] = []
-    evidence_event_sequence_nos: list[int] = []
+    affected_session_ids: list[int] = Field(default_factory=list)
+    evidence_event_sequence_nos: list[int] = Field(default_factory=list)
 
 
 class IncidentListResponse(BaseModel):
