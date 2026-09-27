@@ -88,6 +88,27 @@ def start_on(client, ids, node_id):
     return r.json()
 
 
+def add_candidate(factory, exam_id, roll_no):
+    """A second, distinct candidate so two live sessions can coexist."""
+    db = factory()
+    try:
+        candidate = Candidate(name=f"C-{roll_no}", roll_no=roll_no)
+        db.add(candidate)
+        db.commit()
+        return candidate.id
+    finally:
+        db.close()
+
+
+def start_for(client, exam_id, candidate_id, node_id):
+    r = client.post(
+        "/session/start",
+        json={"exam_id": exam_id, "candidate_id": candidate_id, "node_id": node_id},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def fail(client, node_id, reason="demo power cut"):
     r = client.post(f"/demo/nodes/{node_id}/fail", json={"reason": reason})
     assert r.status_code == 200, r.text
@@ -151,8 +172,11 @@ def test_3_failure_event_exists(client):
 def test_4_event_payload_has_affected_sessions(client):
     test_client, factory = client
     ids = seed_exam(factory)
+    # Task 13: one live session per (exam, candidate), so use two candidates.
+    other = add_candidate(factory, ids["exam_id"], "R-002")
     s1 = start_on(test_client, ids, ids["node_ids"][0])
-    s2 = start_on(test_client, ids, ids["node_ids"][0])
+    s2 = start_for(test_client, ids["exam_id"], other, ids["node_ids"][0])
+    assert s1["session_id"] != s2["session_id"]
     body = fail(test_client, ids["node_ids"][0])
     assert body["affected_session_ids"] == sorted([s1["session_id"], s2["session_id"]])
     assert body["affected_count"] == 2
@@ -172,8 +196,9 @@ def test_4_event_payload_has_affected_sessions(client):
 def test_5_active_sessions_become_disconnected(client):
     test_client, factory = client
     ids = seed_exam(factory)
+    other = add_candidate(factory, ids["exam_id"], "R-002")
     s1 = start_on(test_client, ids, ids["node_ids"][0])
-    s2 = start_on(test_client, ids, ids["node_ids"][0])
+    s2 = start_for(test_client, ids["exam_id"], other, ids["node_ids"][0])
     fail(test_client, ids["node_ids"][0])
     assert session_status(factory, s1["session_id"]) == "DISCONNECTED"
     assert session_status(factory, s2["session_id"]) == "DISCONNECTED"
@@ -316,8 +341,9 @@ def test_12d_unknown_node_status_rejected_without_changes(client):
 def test_12e_repeat_returns_original_payload_after_state_change(client):
     test_client, factory = client
     ids = seed_exam(factory)
+    other = add_candidate(factory, ids["exam_id"], "R-002")
     s1 = start_on(test_client, ids, ids["node_ids"][0])
-    s2 = start_on(test_client, ids, ids["node_ids"][0])
+    s2 = start_for(test_client, ids["exam_id"], other, ids["node_ids"][0])
     first = fail(test_client, ids["node_ids"][0])
     original_ids = list(first["affected_session_ids"])
     assert original_ids == sorted([s1["session_id"], s2["session_id"]])
