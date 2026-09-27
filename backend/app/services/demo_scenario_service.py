@@ -32,7 +32,7 @@ from app.db.event import Event
 from app.db.exam import Exam, Node, NodeStatus, Question
 from app.db.incident import Incident, IncidentSession
 from app.db.session import Session
-from app.services import audit_service, incident_service
+from app.services import audit_service, health_service, incident_service
 
 CANDIDATE_COUNT = 3
 QUESTION_COUNT = 3
@@ -150,7 +150,15 @@ def build_overview(db: DbSession, exam_id: int) -> dict[str, Any] | None:
             "end_time": exam.end_time,
         },
         "nodes": [
-            {"id": n.id, "exam_id": n.exam_id, "status": n.status} for n in nodes
+            {
+                "id": n.id,
+                "exam_id": n.exam_id,
+                "status": n.status,
+                # Reuse the read-only early-warning service; no heartbeat
+                # logic is duplicated here and nothing is mutated.
+                "health": health_service.node_health(db, n.id).to_dict(),
+            }
+            for n in nodes
         ],
         "sessions": [
             {

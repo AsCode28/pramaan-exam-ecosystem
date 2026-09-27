@@ -323,6 +323,8 @@ class DemoOverviewNode(BaseModel):
     id: int
     exam_id: int
     status: str
+    # Reuses the read-only early-warning health signal.
+    health: NodeHealthResponse
 
 
 class DemoOverviewSession(BaseModel):
