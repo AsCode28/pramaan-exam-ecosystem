@@ -14,10 +14,26 @@ Idempotency: candidate-originated events carrying both ``session_id`` and
 client_event_id)`` constraint. A retry returns the already-stored event
 with ``appended=False`` and never creates a second row. Genuine database
 errors are never swallowed.
+
+Concurrency
+-----------
+``append_event`` is the one place that reads the tip of the chain and then
+appends to it, so the whole read-tip -> insert -> canonicalize -> hash -> commit
+section is serialized by a module-level :data:`_APPEND_LOCK`. Without it, two
+concurrent writers can both read the same previous hash, producing two events
+that claim the same predecessor and silently breaking the chain.
+
+This is **single-process** protection. A ``threading.Lock`` is held in one
+interpreter's memory, so it correctly serialises the threaded FastAPI worker
+used by the screening prototype, but it does nothing across multiple processes
+or multiple machines. Multi-process or multi-replica deployments would need a
+database-level guarantee (e.g. a row lock, a serialising transaction, or a
+unique constraint on the predecessor hash) rather than an in-process lock.
 """
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +48,10 @@ from app.core.hashing import (
     genesis_hash,
 )
 from app.db.event import Event
+
+# Serialises the append critical section within this process only. See the
+# module docstring for why this is not a distributed lock.
+_APPEND_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -66,6 +86,41 @@ def append_event(
 
     Returns ``AppendResult(event, appended=True)`` for a new row, or
     ``AppendResult(existing, appended=False)`` for an idempotent retry.
+
+    The whole read-tip -> insert -> hash -> commit section runs under
+    :data:`_APPEND_LOCK` (single-process only; see the module docstring).
+    """
+    with _APPEND_LOCK:
+        return _append_event_locked(
+            db,
+            event_type=event_type,
+            exam_id=exam_id,
+            session_id=session_id,
+            candidate_id=candidate_id,
+            node_id=node_id,
+            payload=payload,
+            client_event_id=client_event_id,
+            client_timestamp=client_timestamp,
+        )
+
+
+def _append_event_locked(
+    db: Session,
+    *,
+    event_type: str,
+    exam_id: int | None = None,
+    session_id: int | None = None,
+    candidate_id: int | None = None,
+    node_id: int | None = None,
+    payload: Any = None,
+    client_event_id: str | None = None,
+    client_timestamp: datetime | None = None,
+) -> AppendResult:
+    """Append one event. Caller must already hold :data:`_APPEND_LOCK`.
+
+    NOTE: no server_timestamp parameter. The caller must NOT provide one; the
+    service generates it internally as the authoritative timestamp.
+    client_timestamp stays accepted as untrusted diagnostic metadata only.
     """
     try:
         # 1. Idempotency pre-check (same transaction).

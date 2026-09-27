@@ -1,9 +1,13 @@
 """Deterministic end-to-end demo walkthrough for the PRAMAAN exam ecosystem.
 
 Drives the real public HTTP API of a running backend and validates the full
-resilience story: scenario -> sessions -> answers -> node failure -> incident
-detection -> recovery -> reconciliation -> incident resolution -> audit
-verification -> evidence -> (optional) grounded AI analysis -> overview.
+resilience story: preflight -> scenario -> sessions -> answers -> node failure
+-> incident detection -> recovery -> reconciliation -> incident resolution ->
+audit verification -> evidence -> (optional) grounded AI analysis -> overview.
+
+The preflight stage refuses to run unless the ledger is empty and valid, so
+the demo always validates a pristine, fully-owned append-only chain. Start the
+backend with a fresh ``backend/pramaan.db``.
 
 This runner is intentionally black-box: it uses ONLY the public HTTP API.
 It never imports the application, never opens the database and never calls a
@@ -107,12 +111,40 @@ def require(condition: bool, message: str) -> None:
 
 def stage(number: int, title: str) -> None:
     """Print a clear stage banner."""
-    print(f"\n[{number}/11] {title}")
+    print(f"\n[{number}/12] {title}")
     print("-" * (len(title) + 8))
 
 
 def ok(message: str) -> None:
     print(f"    OK  {message}")
+
+
+def stage_preflight(client: DemoClient) -> None:
+    """Stage 0: refuse to run against a non-empty ledger.
+
+    The walkthrough validates a global, append-only hash chain. Running it
+    against a backend that already holds events would still validate (audit
+    covers the whole ledger) but the counts printed would mix demo events with
+    pre-existing ones, which makes the run meaningless as a demo. We therefore
+    require a pristine ledger instead of adding a destructive reset endpoint.
+    """
+    audit = client.post("/audit/verify")
+    require_fields(audit, ["valid", "events_checked"], "audit/verify")
+    if audit["valid"] is not True:
+        raise DemoFailure(
+            f"audit/verify: the existing ledger is already invalid "
+            f"(first_broken_sequence_no={audit.get('first_broken_sequence_no')}, "
+            f"failure_reason={audit.get('failure_reason')!r}). Start with a "
+            "fresh backend/pramaan.db."
+        )
+    checked = audit["events_checked"]
+    if checked != 0:
+        raise DemoFailure(
+            f"the ledger already holds {checked} event(s). The demo walkthrough "
+            "must start from an empty append-only chain: stop the backend, "
+            "delete backend/pramaan.db, and start the backend again."
+        )
+    ok("ledger is empty and valid (events_checked=0)")
 
 
 def stage_create_scenario(client: DemoClient) -> dict:
@@ -442,41 +474,44 @@ def run(base_url: str, skip_ai: bool) -> None:
     """Execute the full walkthrough, validating every stage."""
     client = DemoClient(base_url)
 
-    stage(1, "Create demo scenario")
+    stage(1, "Preflight: require a pristine ledger")
+    stage_preflight(client)
+
+    stage(2, "Create demo scenario")
     scenario = stage_create_scenario(client)
 
-    stage(2, "Start three sessions")
+    stage(3, "Start three sessions")
     sessions = stage_start_sessions(client, scenario)
 
-    stage(3, "Save live answers")
+    stage(4, "Save live answers")
     stage_save_answers(client, scenario, sessions)
 
-    stage(4, "Fail the exam node and detect incidents")
+    stage(5, "Fail the exam node and detect incidents")
     stage_fail_node_and_detect(client, scenario, sessions)
 
-    stage(5, "Recover the exam node")
+    stage(6, "Recover the exam node")
     stage_recover_node(client, scenario)
 
-    stage(6, "Reconcile buffered answers")
+    stage(7, "Reconcile buffered answers")
     stage_reconcile(client, scenario, sessions)
 
-    stage(7, "Re-evaluate and resolve incidents")
+    stage(8, "Re-evaluate and resolve incidents")
     resolved = stage_resolve_incidents(client, scenario)
 
-    stage(8, "Verify the global audit chain")
+    stage(9, "Verify the global audit chain")
     stage_verify_audit(client)
 
-    stage(9, "Fetch grounded incident evidence")
+    stage(10, "Fetch grounded incident evidence")
     incident_id = resolved[0]["id"]
     evidence = stage_fetch_evidence(client, incident_id)
 
-    stage(10, "Grounded AI incident analysis")
+    stage(11, "Grounded AI incident analysis")
     if skip_ai:
         print("    SKIP  --skip-ai requested; no Gemini call attempted")
     else:
         stage_analyze(client, incident_id, evidence)
 
-    stage(11, "Operational overview")
+    stage(12, "Operational overview")
     stage_overview(client, scenario, sessions)
 
 

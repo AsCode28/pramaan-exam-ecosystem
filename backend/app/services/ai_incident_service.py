@@ -12,6 +12,8 @@ Guarantees
   Response or audit state. The database session is only read from.
 - Never returns an ungrounded evidence reference: a single hallucinated
   reference rejects the whole response.
+- A grounded analysis must cite at least one real event; an empty
+  ``evidence_refs`` is rejected rather than returned.
 - Every AI failure mode (missing key, SDK/API error, timeout, invalid JSON,
   missing fields, ungrounded refs) raises a controlled exception so the API can
   surface a controlled error without affecting core incident/evidence/audit
@@ -92,8 +94,9 @@ def _build_prompt(evidence_package: dict[str, Any]) -> str:
         "Rules:\n"
         "- Explain the incident using ONLY the supplied evidence. Never invent "
         "facts that are absent from the package.\n"
-        "- evidence_refs may only contain sequence_no values that appear in "
-        "evidence_events. Never reference anything else.\n"
+        "- evidence_refs must cite at least one sequence_no that appears in "
+        "evidence_events, and every entry must be one of those sequence_nos. "
+        "Never reference anything else, and never return an empty list.\n"
         "- If the ledger audit status is invalid, say so in impact_summary and "
         "recommend re-verification; do not silently ignore it.\n"
         "- Recovery facts already state what the ledger can prove; do not "
@@ -190,7 +193,18 @@ def _parse_and_validate(text: str) -> IncidentAnalysis:
 def _ground_evidence_refs(
     analysis: IncidentAnalysis, allowed_sequence_nos: list[int]
 ) -> list[int]:
-    """Reject the whole response if ANY evidence reference is ungrounded."""
+    """Validate the model's citations; reject the whole response on any problem.
+
+    A grounded analysis must cite at least one real event, and every citation
+    must exist in the incident's actual evidence package. Empty or ungrounded
+    references are rejected rather than silently returned, so an ungrounded
+    claim can never reach the operator.
+    """
+    if not analysis.evidence_refs:
+        raise AIResponseInvalidError(
+            "Gemini returned no evidence_refs; a grounded analysis must cite "
+            "at least one event from the evidence package"
+        )
     allowed = set(allowed_sequence_nos)
     ungrounded = [ref for ref in analysis.evidence_refs if ref not in allowed]
     if ungrounded:

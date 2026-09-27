@@ -58,10 +58,15 @@ Integrity rules
   ``client_timestamp`` is never trusted.
 - The whole evaluation runs in ONE transaction: single commit, full rollback on
   any failure.
+- Concurrent evaluation of the same exam is serialised per exam by an
+  in-process lock, so two simultaneous evaluations cannot both create a
+  duplicate active incident. This is single-process protection, not distributed
+  locking.
 """
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -73,6 +78,22 @@ from app.db.event import Event
 from app.db.exam import Exam, Node
 from app.db.incident import Incident, IncidentSession
 from app.db.session import Session
+
+# Per-exam evaluation locks: {exam_id: Lock}. Two concurrent evaluations of the
+# same exam would both see "no active incident" and both create a row. Keying by
+# exam keeps unrelated exams evaluating concurrently. Single-process only.
+_EVALUATION_LOCKS: dict[int, threading.Lock] = {}
+_EVALUATION_LOCKS_GUARD = threading.Lock()
+
+
+def _evaluation_lock(exam_id: int) -> threading.Lock:
+    """Return the stable per-exam evaluation lock, creating it once."""
+    with _EVALUATION_LOCKS_GUARD:
+        lock = _EVALUATION_LOCKS.get(exam_id)
+        if lock is None:
+            lock = threading.Lock()
+            _EVALUATION_LOCKS[exam_id] = lock
+        return lock
 
 # Severities, ordered from narrowest to broadest scope.
 SEVERITY_CANDIDATE = "CANDIDATE"
@@ -279,10 +300,21 @@ def evaluate_incidents(db: DbSession, exam_id: int) -> list[Incident]:
     respect to the Event ledger.
 
     Returns every incident of the exam (ACTIVE and RESOLVED), ordered by id.
+
+    Concurrency: the whole evaluation is serialised per exam by
+    :data:`_EVALUATION_LOCKS`. Two concurrent evaluations of the same exam
+    would otherwise both observe "no active incident" and each create a
+    duplicate row. This is **single-process** protection only.
     """
     if db.get(Exam, exam_id) is None:
         raise NotFound(f"Exam {exam_id} does not exist")
 
+    with _evaluation_lock(exam_id):
+        return _evaluate_incidents_locked(db, exam_id)
+
+
+def _evaluate_incidents_locked(db: DbSession, exam_id: int) -> list[Incident]:
+    """Evaluate one exam. Caller must already hold the per-exam lock."""
     now = utcnow()
     window_start = now - timedelta(seconds=NODE_WINDOW_SECONDS)
 
@@ -474,14 +506,21 @@ def evaluate_incidents(db: DbSession, exam_id: int) -> list[Incident]:
 def _causal_failure_event(
     failure_events: list[Event], session: Session
 ) -> Event | None:
-    """Most recent NODE_FAILURE_INJECTED that disrupted this exact session."""
+    """Most recent NODE_FAILURE_INJECTED that disrupted this exact session.
+
+    Returns ``None`` when no failure event belongs to the session's own node.
+    It must never fall back to another node's failure: a node that never
+    touched this session cannot be the cause of this session's disconnection,
+    and anchoring a CANDIDATE incident to such an event would ground it in
+    unrelated evidence.
+    """
     for event in reversed(failure_events):
         if event.node_id != session.node_id:
             continue
         affected = (event.payload or {}).get("affected_session_ids") or []
         if not affected or session.id in affected:
             return event
-    return failure_events[-1] if failure_events else None
+    return None
 
 
 def _node_threshold_crossing(

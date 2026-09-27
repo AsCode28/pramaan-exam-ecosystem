@@ -609,7 +609,7 @@ def test_prompt_contains_only_the_evidence_package(client, monkeypatch):
     assert r.status_code == 200, r.text
     assert "EVIDENCE PACKAGE (JSON)" in captured["prompt"]
     assert str(incident["id"]) in captured["prompt"]
-    assert "evidence_refs may only contain sequence_no" in captured["prompt"]
+    assert "evidence_refs must cite at least one sequence_no" in captured["prompt"]
 
 
 
@@ -691,14 +691,20 @@ def test_analyze_accepts_fenced_json(client, monkeypatch):
     assert r.json()["evidence_refs"] == [ref]
 
 
-def test_analyze_empty_evidence_refs_is_accepted(client, monkeypatch):
-    """A grounded analysis with no citations is still valid."""
+def test_analyze_empty_evidence_refs_is_rejected(client, monkeypatch):
+    """Task 12: a grounded analysis must cite at least one real event.
+
+    An empty evidence_refs list is no longer accepted: it would present an
+    ungrounded narrative to the operator. It now fails through the same
+    controlled AI error path as any other invalid model response.
+    """
     tc, factory = client
     _, incident = open_candidate_incident(tc, factory)
     mock_gemini(monkeypatch, FakeGeminiResponse(gemini_payload([])))
     r = tc.post(f"/incident/{incident['id']}/analyze")
-    assert r.status_code == 200, r.text
-    assert r.json()["evidence_refs"] == []
+    assert r.status_code == 502, r.text
+    assert "no evidence_refs" in r.json()["detail"]
+    assert "evidence_refs" not in r.json()
 
 
 # --------------------------------------------------------------------------- #
