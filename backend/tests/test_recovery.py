@@ -363,15 +363,27 @@ def test_r17_exact_acknowledged_set_returned(client):
     assert report["acknowledged_client_event_ids"] == ["pre-1", "b-1"]
 
 
-def test_r18_missing_ids_reported(client):
+def test_r18_empty_reconciliation_completes_cleanly(client):
+    """Task 13: an empty buffer is a SUCCESSFUL recovery, not a stuck session.
+
+    There is nothing to reconcile, so the session must reach ACTIVE and get
+    exactly one SESSION_RECOVERED event.
+    """
     test_client, factory = client
     ids = seed(factory)
     s = _to_recovering(test_client, factory, ids, with_answer=False)
     report = reconcile(test_client, s["session_id"], [])
     assert report["submitted_client_event_ids"] == []
     assert report["missing_client_event_ids"] == []
-    assert report["reconciliation_complete"] is False
-    assert report["status"] == "RECOVERING"
+    assert report["mismatched_client_event_ids"] == []
+    assert report["rejected_client_event_ids"] == []
+    assert report["reconciliation_complete"] is True
+    assert report["status"] == "ACTIVE"
+    assert report["recovered_event_sequence_no"] is not None
+    assert count_events(factory, event_type="SESSION_RECOVERED") == 1
+    # The projection is never stranded in RECOVERING.
+    state = test_client.get(f"/session/{s['session_id']}/state").json()
+    assert state["status"] == "ACTIVE"
 
 
 def test_r19_mismatch_does_not_activate(client):

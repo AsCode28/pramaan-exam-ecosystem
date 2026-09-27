@@ -316,7 +316,6 @@ def evaluate_incidents(db: DbSession, exam_id: int) -> list[Incident]:
 def _evaluate_incidents_locked(db: DbSession, exam_id: int) -> list[Incident]:
     """Evaluate one exam. Caller must already hold the per-exam lock."""
     now = utcnow()
-    window_start = now - timedelta(seconds=NODE_WINDOW_SECONDS)
 
     try:
         all_sessions = db.scalars(
@@ -348,9 +347,22 @@ def _evaluate_incidents_locked(db: DbSession, exam_id: int) -> list[Incident]:
             )
             .order_by(Event.sequence_no.asc())
         ).all()
-        recent_failure_events = [
-            ev for ev in failure_events if ev.server_timestamp >= window_start
-        ]
+        # Failure events grouped per node, plus the sequence_no at which each
+        # node's current failure episode opened (i.e. after its last recovery).
+        failure_by_node: dict[int, list[Event]] = {}
+        for ev in failure_events:
+            failure_by_node.setdefault(ev.node_id, []).append(ev)
+        episode_start: dict[int, int] = {}
+        for ev in db.scalars(
+            select(Event)
+            .where(
+                Event.exam_id == exam_id,
+                Event.event_type == "NODE_RECOVERY_INITIATED",
+            )
+            .order_by(Event.sequence_no.asc())
+        ).all():
+            if ev.node_id is not None:
+                episode_start[ev.node_id] = ev.sequence_no
 
         # ---------------------------------------------------------- CANDIDATE
         # One independent row per affected session, keyed (exam_id, session_id).
@@ -407,8 +419,18 @@ def _evaluate_incidents_locked(db: DbSession, exam_id: int) -> list[Incident]:
             if node is None or node.status != "FAILED":
                 continue
 
+            # While the node is still FAILED its CURRENT failure episode stays
+            # eligible regardless of age: an operator must not stop seeing a
+            # NODE incident just because the episode outlasted the rolling
+            # window. The episode is closed by the node's last recovery, so
+            # earlier (recovered) failures can never re-open a NODE incident.
+            episode = [
+                ev
+                for ev in failure_by_node.get(node_id, [])
+                if ev.sequence_no > episode_start.get(node_id, 0)
+            ]
             crossing_event, crossed_sessions = _node_threshold_crossing(
-                recent_failure_events, node_id
+                episode, node_id
             )
             if crossing_event is None:
                 continue
@@ -419,7 +441,7 @@ def _evaluate_incidents_locked(db: DbSession, exam_id: int) -> list[Incident]:
                 status=STATUS_ACTIVE,
                 root_cause_summary=(
                     f"Node {node_id} outage reached {len(crossed_sessions)} "
-                    f"affected sessions within {NODE_WINDOW_SECONDS}s"
+                    f"affected sessions in the current failure episode"
                 ),
                 created_from_event_id=crossing_event.sequence_no,
                 detected_at=now,

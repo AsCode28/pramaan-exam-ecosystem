@@ -36,6 +36,7 @@ NODE_FAILURE_INJECTED = "NODE_FAILURE_INJECTED"
 FAILED = "FAILED"
 ACTIVE = "ACTIVE"
 DISCONNECTED = "DISCONNECTED"
+RECOVERING = "RECOVERING"
 
 # Node source statuses that may transition to FAILED.
 FAILABLE_NODE_STATUSES = ("HEALTHY", "DEGRADED")
@@ -85,11 +86,17 @@ def fail_node(
         # Unknown status: change nothing, disconnect nothing, append nothing.
         raise InvalidNodeState(node_id=node.id, status=previous_status)
 
-    # ACTIVE sessions only, deterministic order by session id.
+    # ACTIVE and RECOVERING sessions are both knocked out. RECOVERING must be
+    # included, otherwise a node that flaps (ACTIVE -> DISCONNECTED ->
+    # RECOVERING, then FAILED again) strands those sessions in RECOVERING
+    # forever: reconcile refuses to run while the node is FAILED.
     affected = (
         db.execute(
             select(Session.id)
-            .where(Session.node_id == node.id, Session.status == ACTIVE)
+            .where(
+                Session.node_id == node.id,
+                Session.status.in_((ACTIVE, RECOVERING)),
+            )
             .order_by(Session.id)
         )
         .scalars()
@@ -107,7 +114,6 @@ def fail_node(
         for session in sessions:
             session.status = DISCONNECTED
     db.flush()  # NO commit here; append_event() commits flips + event together
-
     result = event_ledger.append_event(
         db,
         event_type=NODE_FAILURE_INJECTED,

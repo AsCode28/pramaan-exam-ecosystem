@@ -301,8 +301,12 @@ def test_node_threshold_requires_three_affected_sessions(client):
     assert by_severity(incidents, "SYSTEM") == []
 
 
-def test_node_threshold_event_derived_outside_window_creates_nothing(client):
-    """Failure older than the 60s window cannot open a NEW NODE incident."""
+def test_stale_episode_still_failed_node_is_detected(client):
+    """Task 13: an ongoing FAILED episode stays NODE-eligible past the window.
+
+    The 3-in-60s clustering window no longer hides a node that is still down:
+    while the node is FAILED, the current failure episode remains eligible.
+    """
     tc, factory = client
     ids = seed(factory, node_count=1, sessions_per_node=40, questions=0)
     stale = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=300)
@@ -333,29 +337,139 @@ def test_node_threshold_event_derived_outside_window_creates_nothing(client):
 
     incidents = evaluate(tc, ids["exam_id"])
     assert len(by_severity(incidents, "CANDIDATE")) == 3
+    assert len(by_severity(incidents, "NODE")) == 1, (
+        "a node that is still FAILED must keep its NODE incident past the window"
+    )
+
+
+def test_closed_failure_episode_opens_no_new_node_incident(client):
+    """A recovered (HEALTHY) node never re-opens a NODE incident from history.
+
+    This is the guard that keeps old failures from becoming permanently
+    eligible: the episode closed at recovery, so it cannot escalate again.
+    """
+    tc, factory = client
+    ids = seed(factory, node_count=1, sessions_per_node=40, questions=0)
+    stale = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=300)
+
+    db = factory()
+    try:
+        node = db.get(Node, ids["node_ids"][0])
+        node.status = "HEALTHY"  # episode already closed
+        victims = [db.get(Session, sid) for sid in ids["session_ids"][:3]]
+        for sess in victims:
+            sess.status = "RECOVERING"
+        db.add(
+            Event(
+                exam_id=ids["exam_id"],
+                node_id=node.id,
+                event_type="NODE_FAILURE_INJECTED",
+                payload={
+                    "previous_status": "HEALTHY",
+                    "new_status": "FAILED",
+                    "affected_session_ids": [s.id for s in victims],
+                },
+                server_timestamp=stale,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    incidents = evaluate(tc, ids["exam_id"])
     assert by_severity(incidents, "NODE") == []
+
+
+def test_recovered_episode_history_does_not_requalify_after_new_failure(client):
+    """Only the CURRENT episode counts once a node fails again after recovery."""
+    tc, factory = client
+    ids = seed(factory, node_count=1, sessions_per_node=40, questions=0)
+    stale = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=300)
+    db = factory()
+    try:
+        node = db.get(Node, ids["node_ids"][0])
+        # Historical episode: 3 affected sessions, long ago, then recovered.
+        for sid in ids["session_ids"][:3]:
+            db.get(Session, sid).status = "ACTIVE"
+        db.add(
+            Event(
+                exam_id=ids["exam_id"],
+                node_id=node.id,
+                event_type="NODE_FAILURE_INJECTED",
+                payload={
+                    "previous_status": "HEALTHY",
+                    "new_status": "FAILED",
+                    "affected_session_ids": ids["session_ids"][:3],
+                },
+                server_timestamp=stale,
+            )
+        )
+        db.add(
+            Event(
+                exam_id=ids["exam_id"],
+                node_id=node.id,
+                event_type="NODE_RECOVERY_INITIATED",
+                payload={"new_status": "HEALTHY", "affected_session_ids": []},
+                server_timestamp=stale + timedelta(seconds=1),
+            )
+        )
+        # Current episode: node failed again, but only ONE session affected.
+        node.status = "FAILED"
+        db.get(Session, ids["session_ids"][0]).status = "DISCONNECTED"
+        db.add(
+            Event(
+                exam_id=ids["exam_id"],
+                node_id=node.id,
+                event_type="NODE_FAILURE_INJECTED",
+                payload={
+                    "previous_status": "HEALTHY",
+                    "new_status": "FAILED",
+                    "affected_session_ids": [ids["session_ids"][0]],
+                },
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    incidents = evaluate(tc, ids["exam_id"])
+    assert by_severity(incidents, "NODE") == [], (
+        "the closed 3-session episode must not combine with the new one"
+    )
 
 
 def test_healthy_node_with_affected_sessions_opens_no_node_incident(client):
     """A HEALTHY node never opens a NEW NODE incident from historical evidence.
 
-    The node recovered (HEALTHY) while its sessions are still RECOVERING. The
-    3-in-60s failure evidence is still inside the window, but the operational
-    condition is gone, so only an already-open incident could be reused.
+    The node recovered (HEALTHY) while its sessions are still RECOVERING, and no
+    NODE incident is open yet (state is seeded directly, so fail-time automatic
+    evaluation cannot pre-open one). The operational condition is gone, so only
+    an already-open incident could be reused.
     """
     tc, factory = client
     ids = seed(factory, node_count=1, sessions_per_node=3, questions=1)
     node_id = ids["node_ids"][0]
-    qid = ids["question_ids"][0]
     sessions = ids["session_ids"]
 
-    fail_node(tc, node_id)
     db = factory()
     try:
         node = db.get(Node, node_id)
-        node.status = "HEALTHY"  # node recovered
+        node.status = "HEALTHY"  # node already recovered
         for sid in sessions:
             db.get(Session, sid).status = "RECOVERING"  # sessions still affected
+        # Real failure evidence for this node, but no evaluation has run yet.
+        db.add(
+            Event(
+                exam_id=ids["exam_id"],
+                node_id=node_id,
+                event_type="NODE_FAILURE_INJECTED",
+                payload={
+                    "previous_status": "HEALTHY",
+                    "new_status": "FAILED",
+                    "affected_session_ids": list(sessions),
+                },
+            )
+        )
         db.commit()
     finally:
         db.close()
@@ -592,8 +706,10 @@ def test_recovered_sessions_do_not_satisfy_the_ratio_threshold(client):
         )
         is None
     )
-    # And the engine opens nothing: node is HEALTHY, no session is affected.
-    assert by_severity(evaluate(tc, ids["exam_id"]), "SYSTEM") == []
+    # And the engine opens nothing NEW: a SYSTEM incident legitimately existed
+    # while 25% of sessions were affected, and recovery resolved it.
+    system_incidents = by_severity(evaluate(tc, ids["exam_id"]), "SYSTEM")
+    assert {i["status"] for i in system_incidents} == {"RESOLVED"}
 
 
 def test_crossing_event_is_the_first_event_crossing_the_current_condition(client):
@@ -825,22 +941,34 @@ def test_evidence_excludes_unrelated_nodes_and_sessions(client):
 def test_system_evidence_excludes_unrelated_node_events(client):
     """SYSTEM evidence cites only linked sessions and contributing nodes.
 
-    An unrelated node in the same exam emits node-wide events during the system
-    episode; none of its sequence numbers may appear in the evidence.
+    Task 13 note: node failure now triggers automatic evaluation, so a node
+    that fails LATER legitimately joins the open SYSTEM incident (its sessions
+    are affected and therefore linked). The invariant under test is therefore
+    the Task 6 scoping rule itself: every cited event must belong to a
+    contributing node or a linked session -- an event from a node that never
+    participates can never be cited.
     """
     tc, factory = client
-    ids = seed(factory, node_count=3, sessions_per_node=20)
-    n1, n2, n3 = ids["node_ids"]
+    ids = seed(factory, node_count=4, sessions_per_node=20)
+    n1, n2, n3, n4 = ids["node_ids"]
 
     # Two failed nodes open the SYSTEM incident (origin = node 1's event).
     fail_node(tc, n1)
     fail_node(tc, n2)
-
     system_inc = by_severity(evaluate(tc, ids["exam_id"]), "SYSTEM")[0]
 
-    # Node 3 is NOT part of the incident but emits a node-wide event now.
+    # Node 3 fails afterwards and so becomes genuinely part of the episode.
     fail_node(tc, n3)
     recover_node(tc, n3)
+
+    # Node 4 never participates: a plain heartbeat from one of its ACTIVE
+    # sessions is the "unrelated activity" that must never be cited.
+    unrelated_session = ids["sessions_by_node"][3][0]
+    heartbeat = tc.post(
+        f"/session/{unrelated_session}/heartbeat",
+        json={"client_event_id": "unrelated-hb"},
+    )
+    assert heartbeat.status_code == 200, heartbeat.text
 
     db = factory()
     try:
@@ -855,24 +983,44 @@ def test_system_evidence_excludes_unrelated_node_events(client):
                 .order_by(Event.sequence_no)
             ).all()
         ]
-        assert len(node3_events) >= 2  # failure + recovery on the unrelated node
+        assert len(node3_events) >= 2  # failure + recovery on node 3
+        unrelated_events = [
+            ev.sequence_no
+            for ev in db.scalars(
+                select(Event).where(
+                    Event.node_id == n4, Event.event_type == "HEARTBEAT"
+                )
+            ).all()
+        ]
+        assert unrelated_events
     finally:
         db.close()
 
     evidence = tc.get(f"/incident/{system_inc['id']}").json()[
         "evidence_event_sequence_nos"
     ]
-    assert not set(node3_events) & set(evidence)
 
-    # What remains is strictly the incident's own contributing scope.
-    contributing_nodes = {n1, n2}
-    linked = set(system_inc["affected_session_ids"])
+    # A node that never participates is never cited.
+    assert not set(unrelated_events) & set(evidence)
+
+    # The rest is strictly the incident's own contributing scope: the origin
+    # node plus every node owning a linked session (node 3 now qualifies).
+    # Re-read the incident: its linked set grew when node 3 failed.
+    current = tc.get(f"/incident/{system_inc['id']}").json()
+    linked = set(current["affected_session_ids"])
     db = factory()
     try:
+        origin_node = db.get(Event, current["created_from_event_id"]).node_id
+        contributing = {origin_node} | {
+            s.node_id
+            for s in db.scalars(
+                select(Session).where(Session.id.in_(linked))
+            ).all()
+        } if linked else {origin_node}
         for ev in db.scalars(
             select(Event).where(Event.sequence_no.in_(evidence))
         ).all():
-            assert ev.node_id in (None, *contributing_nodes)
+            assert ev.node_id is None or ev.node_id in contributing
             assert ev.session_id is None or ev.session_id in linked
     finally:
         db.close()
@@ -941,7 +1089,12 @@ def test_evaluation_preserves_the_hash_chain(client):
 
 
 def test_cleared_condition_does_not_open_a_new_incident(client):
-    """A historical threshold crossing that already healed opens nothing."""
+    """A healed condition leaves no ACTIVE incident behind.
+
+    Task 13 note: failure/recovery now trigger automatic evaluation, so the
+    incidents legitimately exist and are RESOLVED. The guard under test is that
+    a cleared condition opens nothing NEW and leaves nothing active.
+    """
     tc, factory = client
     ids = seed(factory, node_count=1, sessions_per_node=3, questions=1)
     node_id = ids["node_ids"][0]
@@ -952,14 +1105,19 @@ def test_cleared_condition_does_not_open_a_new_incident(client):
     for index, sid in enumerate(ids["session_ids"]):
         reconcile(tc, sid, qid, f"heal-{index}")
 
-    # The 3-in-60s crossing is still in the ledger, but the node is HEALTHY and
-    # every session is ACTIVE, so no incident may be opened from it.
-    assert evaluate(tc, ids["exam_id"]) == []
+    # The crossing is still in the ledger, but the node is HEALTHY and every
+    # session is ACTIVE, so nothing may be open and nothing new may appear.
+    settled = evaluate(tc, ids["exam_id"])
+    assert {i["status"] for i in settled} == {"RESOLVED"}
+    assert by_severity(settled, "ACTIVE") == []
 
     db = factory()
     try:
         assert db.scalars(
-            select(Incident).where(Incident.exam_id == ids["exam_id"])
+            select(Incident).where(
+                Incident.exam_id == ids["exam_id"],
+                Incident.status == "ACTIVE",
+            )
         ).all() == []
     finally:
         db.close()
@@ -1007,10 +1165,29 @@ def test_active_incident_lookup_helpers(client):
 
 
 def test_evaluation_rolls_back_completely_on_failure(client, monkeypatch):
-    """A mid-projection failure commits nothing; the exam is left untouched."""
+    """A mid-projection failure commits nothing; the exam is left untouched.
+
+    Task 13 note: node failure now triggers automatic evaluation, so incidents
+    already exist by the time the fault is injected. The invariant under test is
+    therefore ATOMICITY -- a failing evaluation must add nothing at all, not
+    that the exam started out empty.
+    """
     tc, factory = client
     ids = seed(factory, node_count=1, sessions_per_node=3)
     fail_node(tc, ids["node_ids"][0])
+
+    db = factory()
+    try:
+        incidents_before = set(
+            db.scalars(
+                select(Incident.id).where(Incident.exam_id == ids["exam_id"])
+            ).all()
+        )
+        links_before = set(
+            db.scalars(select(IncidentSession.session_id)).all()
+        )
+    finally:
+        db.close()
 
     def boom(*args, **kwargs):
         raise RuntimeError("projection exploded")
@@ -1020,13 +1197,13 @@ def test_evaluation_rolls_back_completely_on_failure(client, monkeypatch):
     try:
         with pytest.raises(RuntimeError):
             incident_service.evaluate_incidents(db, ids["exam_id"])
-        assert (
+        # Nothing new was committed by the failed run.
+        assert set(
             db.scalars(
-                select(Incident).where(Incident.exam_id == ids["exam_id"])
+                select(Incident.id).where(Incident.exam_id == ids["exam_id"])
             ).all()
-            == []
-        )
-        assert db.scalars(select(IncidentSession)).all() == []
+        ) == incidents_before
+        assert set(db.scalars(select(IncidentSession.session_id)).all()) == links_before
     finally:
         db.close()
     monkeypatch.undo()

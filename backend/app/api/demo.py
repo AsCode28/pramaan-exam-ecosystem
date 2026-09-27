@@ -22,6 +22,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session as DbSession
 
 from app.api.errors import InvalidNodeState, NotFound, SessionApiError
+from app.api.http_errors import raise_mapped, refresh_incidents
 from app.api.schemas import (
     DemoOverviewResponse,
     DemoScenarioCreateResponse,
@@ -34,6 +35,7 @@ from app.api.schemas import (
 )
 from app.core.database import get_db
 from app.db.event import Event
+from app.db.exam import Exam
 from app.services import demo_scenario_service, failure_service, recovery_service
 
 router = APIRouter(prefix="/demo", tags=["demo"])
@@ -66,9 +68,12 @@ def fail_node(node_id: int, body: FailNodeRequest, db: DbSession = Depends(get_d
         raise HTTPException(status_code=404, detail=str(exc))
     except InvalidNodeState as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except SessionApiError:
-        # Unexpected domain failure: never leak the internal message.
-        raise HTTPException(status_code=500, detail="internal error")
+    except SessionApiError as exc:
+        raise_mapped(exc)
+
+    # Keep incident state current without a manual evaluation call.
+    refresh_incidents(db, exam_id=node.exam_id)
+
     return FailNodeResponse(
         node_id=node.id,
         previous_status=(
@@ -97,9 +102,12 @@ def recover_node(
         raise HTTPException(status_code=404, detail=str(exc))
     except InvalidNodeState as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except SessionApiError:
-        # Unexpected domain failure: never leak the internal message.
-        raise HTTPException(status_code=500, detail="internal error")
+    except SessionApiError as exc:
+        raise_mapped(exc)
+
+    # Keep incident state current without a manual evaluation call.
+    refresh_incidents(db, exam_id=node.exam_id)
+
     return RecoverNodeResponse(
         node_id=node.id,
         previous_status=(
