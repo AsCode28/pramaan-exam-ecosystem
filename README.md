@@ -1,6 +1,7 @@
 # pramaan-exam-ecosystem
 
-Backend for the PRAMAAN exam resilience prototype: an append-only,
+## Backend for the PRAMAAN exam resilience prototype: 
+An append-only,
 hash-chained event ledger with deterministic incident detection, tamper
 detection, and a grounded AI explanation layer.
 
@@ -143,3 +144,22 @@ These are **not** part of this prototype, contrary to any earlier wording:
 - **No predictive ML.** The early-warning signal is a deterministic
   heartbeat-freshness threshold, not a model.
 - **No legal or regulatory policy engine.**
+
+
+---
+
+## Interactive PRAMAAN Dashboard (Frontend)
+
+To demonstrate the backend's resilience mechanisms visually, this prototype includes a dedicated React-based frontend featuring a built-in **PRAMAAN Demo Controller**:
+* **Candidate View:** A pristine, NTA-style examination interface that securely freezes the exam timer during network disruptions.
+* **Admin Command Center:** A disaster control hub to inject node failures, trigger the hash-chain audit, and generate AI-driven incident reports.
+* **Split View (Demo):** A side-by-side layout designed specifically for hackathon pitches to showcase real-time interactions between backend disruptions and frontend recovery.
+
+### Frontend Quick Start
+
+```bash
+cd frontend
+npm install
+npm run dev
+
+Open http://localhost:5173 in your browser and select the Split View (Demo) mode from the top controller strip to begin the visual walkthrough.
