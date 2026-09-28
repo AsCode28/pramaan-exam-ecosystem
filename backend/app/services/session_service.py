@@ -47,6 +47,12 @@ SESSION_STARTED = "SESSION_STARTED"
 ANSWER_SAVED = "ANSWER_SAVED"
 HEARTBEAT = "HEARTBEAT"
 
+# Session states that can never be followed by another live session for the
+# same (exam, candidate). A candidate either is still sitting the exam
+# (ACTIVE / DISCONNECTED / RECOVERING) or has finished; re-starting must not
+# fork a second concurrent session.
+TERMINAL_SESSION_STATUSES = ("SUBMITTED", "COMPLETED", "TERMINATED")
+
 
 def _utcnow_naive() -> datetime:
     """Backend-authoritative timestamp (SQLite stores naive UTC)."""
@@ -78,10 +84,37 @@ def _reject_if_node_unavailable(session: Session, operation: str) -> None:
         raise InvalidState(session.status)
 
 
+def find_live_session(
+    db: DbSession, *, exam_id: int, candidate_id: int
+) -> Session | None:
+    """Existing non-terminal session for this (exam, candidate), if any.
+
+    ACTIVE / DISCONNECTED / RECOVERING all count as live: the candidate is
+    still in that sitting, so a repeated start must be served idempotently
+    rather than forking a second concurrent session. A submitted session is
+    terminal and is never returned.
+    """
+    return db.execute(
+        select(Session)
+        .where(
+            Session.exam_id == exam_id,
+            Session.candidate_id == candidate_id,
+            Session.status.not_in(TERMINAL_SESSION_STATUSES),
+        )
+        .order_by(Session.id.asc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def start_session(
     db: DbSession, *, exam_id: int, candidate_id: int, node_id: int
 ) -> tuple[Session, AppendResult]:
-    """Validate, create the Session (uncommitted), append SESSION_STARTED."""
+    """Validate, create the Session (uncommitted), append SESSION_STARTED.
+
+    A repeated start for the same (exam, candidate) returns the existing
+    non-terminal session with ``appended=False`` and appends no second
+    SESSION_STARTED, so the ledger keeps exactly one start per sitting.
+    """
     exam = _get_or_404(db, Exam, exam_id, "exam")
     candidate = _get_or_404(db, Candidate, candidate_id, "candidate")
     node = _get_or_404(db, Node, node_id, "node")
@@ -90,6 +123,25 @@ def start_session(
     if node.status == "FAILED":
         # Never start a session on a known-dead node.
         raise NodeUnavailable(node_id=node.id, session_id=None, operation="start")
+
+    # Idempotent repeat: the candidate is already sitting this exam.
+    existing = find_live_session(db, exam_id=exam.id, candidate_id=candidate.id)
+    if existing is not None:
+        start_event = db.execute(
+            select(Event)
+            .where(
+                Event.session_id == existing.id,
+                Event.event_type == SESSION_STARTED,
+            )
+            .order_by(Event.sequence_no.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if start_event is not None:
+            return existing, AppendResult(event=start_event, appended=False)
+        # No ledger proof of the original start (pre-existing data): keep the
+        # existing session and report it without inventing an event.
+        return existing, AppendResult(event=start_event, appended=False)
+
     now = _utcnow_naive()
     session = Session(
         exam_id=exam.id,

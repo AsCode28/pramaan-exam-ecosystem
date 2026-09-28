@@ -408,9 +408,12 @@ def _finalize_reconciliation(db: DbSession, session: Session, out: dict) -> dict
             projections_ok = False
             break
 
+    # A clean run with ZERO buffered events is a successful recovery: there is
+    # nothing to reconcile, so the session must not be stranded in RECOVERING.
+    # Every other strict condition still has to hold, so mismatches, rejected
+    # items, ledger failures and projection failures keep the session put.
     complete = (
-        bool(out["submitted"])
-        and not out["mismatched"]
+        not out["mismatched"]
         and not out["rejected"]
         and not out["ledger_failed"]
         and not out["projection_failed"]
@@ -420,7 +423,7 @@ def _finalize_reconciliation(db: DbSession, session: Session, out: dict) -> dict
 
     status = session.status
     recovered_seq: int | None = None
-    if complete and out["submitted"]:
+    if complete:
         session.status = ACTIVE
         db.flush()  # NO commit; SESSION_RECOVERED commits both together
         reconciled_ids = [k for k in out["submitted"] if k in final_events]

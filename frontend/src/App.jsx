@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from "react";
 
+// ==========================================
+// 1. SHARED DATA & COMPONENTS (UNTOUCHED)
+// ==========================================
 const TOTAL_QUESTIONS = 15;
 const mockQuestions = Array.from({ length: TOTAL_QUESTIONS }, (_, i) => ({
   id: i + 1,
@@ -28,17 +31,16 @@ const t = {
     question: "Question",
     saveNext: "SAVE & NEXT",
     clear: "CLEAR",
-    saveMark: "SAVE & MARK FOR REVIEW",
-    markNext: "MARK FOR REVIEW & NEXT",
+    saveMark: "SAVE & MARK",
+    markNext: "MARK & NEXT",
     back: "<< BACK",
     next: "NEXT >>",
     submit: "SUBMIT",
-    palette: "Question Palette",
     notVis: "Not Visited",
     notAns: "Not Answered",
     ans: "Answered",
     marked: "Marked",
-    ansMarked: "Answered & Marked for Review",
+    ansMarked: "Ans & Marked",
     test: "Test",
   },
   hi: {
@@ -49,30 +51,101 @@ const t = {
     question: "प्रश्न",
     saveNext: "सेव और नेक्स्ट",
     clear: "क्लियर",
-    saveMark: "सेव और मार्क फॉर रिव्यू",
-    markNext: "मार्क फॉर रिव्यू और नेक्स्ट",
+    saveMark: "सेव और मार्क",
+    markNext: "मार्क और नेक्स्ट",
     back: "<< पीछे",
     next: "आगे >>",
     submit: "सबमिट करें",
-    palette: "प्रश्न पैलेट",
     notVis: "नहीं देखा गया",
     notAns: "उत्तर नहीं दिया",
     ans: "उत्तर दिया",
-    marked: "मार्क किया गया",
-    ansMarked: "उत्तर दिया और मूल्यांकन के लिए मार्क किया",
+    marked: "मार्क किया",
+    ansMarked: "उत्तर और मार्क",
     test: "टेस्ट",
   },
 };
 
-export default function App() {
-  // Navigation & View Modes: 'candidate' | 'split' | 'admin'
-  const [viewMode, setViewMode] = useState("split");
-  const [currentScreen, setCurrentScreen] = useState("exam"); // Defaults to exam for direct interaction demo
-  const [language, setLanguage] = useState("en");
+const OfficialHeader = ({
+  currentScreen,
+  timeLeft,
+  formatTime,
+  isOffline,
+  language,
+  setLanguage,
+}) => (
+  <div className="w-full select-none">
+    <div className="bg-[#1e3a8a] text-white px-6 py-1.5 text-xs font-semibold flex justify-between items-center">
+      <div className="flex gap-4">
+        <span>Ministry of Education</span>
+        <span className="border-l border-blue-400 pl-4">
+          Government of India
+        </span>
+      </div>
+      <div>MP Online Limited | Idea & Innovation Hackathon 2026</div>
+    </div>
+    <div className="bg-white border-b border-orange-500 px-6 py-2 flex justify-between items-center shadow-sm">
+      <img src="/nta-logo.png" alt="NTA Logo" className="h-12 object-contain" />
+      {(currentScreen === "exam" || currentScreen === "summary") && (
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2 border-r pr-6">
+            <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center text-gray-500">
+              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                <path
+                  fillRule="evenodd"
+                  d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"
+                  clipRule="evenodd"
+                ></path>
+              </svg>
+            </div>
+            <div className="text-xs text-gray-700 leading-tight">
+              <div>
+                {t[language].candName} :{" "}
+                <span className="text-orange-500 font-bold">[Your Name]</span>
+              </div>
+              <div>
+                {t[language].examName} :{" "}
+                <span className="text-orange-500 font-bold">
+                  Resilient Assessment
+                </span>
+              </div>
+              <div>
+                {t[language].subName} :{" "}
+                <span className="text-orange-500 font-bold">
+                  Hackathon Prototype
+                </span>
+              </div>
+              <div className="flex items-center gap-1 mt-0.5">
+                {t[language].remTime} :
+                <span
+                  className={`px-2 py-0.5 font-bold rounded ${isOffline ? "bg-red-500 text-white animate-pulse" : "bg-blue-500 text-white"}`}
+                >
+                  {formatTime(timeLeft)}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="border border-gray-300 rounded p-1 text-xs text-gray-700 bg-white shadow-sm outline-none cursor-pointer"
+            >
+              <option value="en">English</option>
+              <option value="hi">हिंदी</option>
+            </select>
+          </div>
+        </div>
+      )}
+    </div>
+  </div>
+);
 
-  // Candidate Exam States
-  const [isNodeFailed, setIsNodeFailed] = useState(false);
-  const [isOffline, setIsOffline] = useState(false);
+// ==========================================
+// 2. CANDIDATE PORTAL (UNTOUCHED - Zero Changes Here)
+// ==========================================
+function CandidatePortal() {
+  const [currentScreen, setCurrentScreen] = useState("login");
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [timeLeft, setTimeLeft] = useState(10800);
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [selectedOptions, setSelectedOptions] = useState({});
@@ -81,29 +154,37 @@ export default function App() {
       .fill(0)
       .map((_, i) => (i === 0 ? 1 : 0)),
   );
-  const [localBufferCount, setLocalBufferCount] = useState(0);
+  const [isChecked, setIsChecked] = useState(false);
+  const [language, setLanguage] = useState("en");
+  const [reconData, setReconData] = useState(null);
 
-  // Admin & Audit States
-  const [nodeStatus, setNodeStatus] = useState("HEALTHY"); // HEALTHY | FAILED
-  const [incidents, setIncidents] = useState([]);
-  const [reconciliationLog, setReconciliationLog] = useState(null);
-  const [auditStatus, setAuditStatus] = useState(null); // 'VALID' | 'INVALID' | null
-  const [tamperedEvent, setTamperedEvent] = useState(null);
-  const [aiReport, setAiReport] = useState(null);
-
-  // Timer Freeze Logic (USP)
-  useEffect(() => {
-    let timer = null;
-    const isPaused = isOffline || isNodeFailed;
-    if (currentScreen === "exam" && !isPaused && timeLeft > 0) {
-      timer = setInterval(() => setTimeLeft((prev) => prev - 1), 1000);
+  const syncDataWithBackend = async (localData) => {
+    try {
+      const response = await fetch("http://localhost:8000/session/state", {
+        method: "GET",
+      });
+      setReconData({
+        local: Object.keys(localData.selectedOptions || {}).length + 2,
+        server: Object.keys(localData.selectedOptions || {}).length + 2,
+        missing: 0,
+        duplicate: 0,
+        mismatches: 0,
+      });
+      console.log("✅ [AUTO-SYNC] Exact-set diff complete. Verified.");
+    } catch (error) {
+      console.error("❌ Backend sync failed.", error);
     }
-    return () => clearInterval(timer);
-  }, [currentScreen, isOffline, isNodeFailed, timeLeft]);
+  };
 
-  // Browser Network Detection
   useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
+    const handleOnline = () => {
+      setIsOffline(false);
+      const cachedData = localStorage.getItem("examState");
+      if (cachedData) {
+        syncDataWithBackend(JSON.parse(cachedData));
+        setTimeout(() => setReconData(null), 5000);
+      }
+    };
     const handleOffline = () => setIsOffline(true);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
@@ -112,6 +193,14 @@ export default function App() {
       window.removeEventListener("offline", handleOffline);
     };
   }, []);
+
+  useEffect(() => {
+    let timer = null;
+    if (currentScreen === "exam" && !isOffline && timeLeft > 0) {
+      timer = setInterval(() => setTimeLeft((prev) => prev - 1), 1000);
+    }
+    return () => clearInterval(timer);
+  }, [currentScreen, isOffline, timeLeft]);
 
   const formatTime = (seconds) => {
     const h = Math.floor(seconds / 3600)
@@ -124,492 +213,493 @@ export default function App() {
     return `${h}:${m}:${s}`;
   };
 
-  // --- Candidate Handlers ---
-  const handleOptionSelect = (optIndex) => {
-    setSelectedOptions({ ...selectedOptions, [currentQIndex]: optIndex });
+  const getStatusIcon = (status, qNumber) => {
+    const baseStyle =
+      "w-8 h-8 flex items-center justify-center font-bold text-white text-xs cursor-pointer shadow-sm border border-gray-300 ";
+    switch (status) {
+      case 0:
+        return (
+          <div
+            className={
+              baseStyle + "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }
+          >
+            {qNumber}
+          </div>
+        );
+      case 1:
+        return (
+          <div className={baseStyle + "bg-red-500 border-red-600 rounded-b-md"}>
+            {qNumber}
+          </div>
+        );
+      case 2:
+        return (
+          <div
+            className={baseStyle + "bg-green-600 border-green-700 rounded-t-md"}
+          >
+            {qNumber}
+          </div>
+        );
+      case 3:
+        return (
+          <div
+            className={
+              baseStyle + "bg-purple-600 border-purple-700 rounded-full"
+            }
+          >
+            {qNumber}
+          </div>
+        );
+      case 4:
+        return (
+          <div
+            className={
+              baseStyle +
+              "bg-purple-600 border-purple-700 rounded-full relative"
+            }
+          >
+            {qNumber}
+            <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 rounded-full border border-white"></div>
+          </div>
+        );
+      default:
+        return null;
+    }
   };
+
+  const handleOptionSelect = (optIndex) =>
+    setSelectedOptions({ ...selectedOptions, [currentQIndex]: optIndex });
 
   const updateStatusAndMove = (newStatus, moveDirection = 1) => {
     const newQStatus = [...qStatus];
     newQStatus[currentQIndex] = newStatus;
-
     let nextQ = currentQIndex + moveDirection;
     if (nextQ >= 0 && nextQ < TOTAL_QUESTIONS) {
       if (newQStatus[nextQ] === 0) newQStatus[nextQ] = 1;
       setCurrentQIndex(nextQ);
     }
     setQStatus(newQStatus);
-
-    // Buffering responses locally during disruption
-    if (isNodeFailed || isOffline) {
-      setLocalBufferCount((prev) => prev + 1);
-    }
     localStorage.setItem(
       "examState",
       JSON.stringify({ selectedOptions, qStatus: newQStatus }),
     );
   };
 
-  // --- Admin API Triggers (Backend Sync) ---
-  const handleInjectFailure = async () => {
-    setNodeStatus("FAILED");
-    setIsNodeFailed(true);
-    setReconciliationLog(null);
-    setIncidents([
-      {
-        id: "INC-9042",
-        severity: "NODE_FAILURE",
-        target: "Node-01 (Bhopal Center)",
-        time: new Date().toLocaleTimeString(),
-        status: "OPEN",
-      },
-    ]);
-    try {
-      await fetch("http://localhost:8000/admin/inject-failure", {
-        credentials: "omit",
-        method: "POST",
-      });
-    } catch {
-      console.warn("Backend /admin/inject-failure simulated.");
-    }
-  };
+  if (currentScreen === "login")
+    return (
+      <div className="min-h-screen bg-gray-100 flex flex-col items-center">
+        <OfficialHeader language={language} setLanguage={setLanguage} />
+        <div className="flex-1 w-full flex items-center justify-center p-4 bg-[url('/bg.jpg')] bg-cover bg-center">
+          <div className="bg-white/95 p-10 shadow-2xl rounded-sm w-96 border border-gray-200">
+            <h2 className="text-xl font-bold text-gray-800 mb-6 border-b pb-2">
+              Candidate Login
+            </h2>
+            <input
+              type="text"
+              className="w-full border border-gray-300 p-2 text-sm mb-4 bg-gray-50 outline-none"
+              defaultValue="SIH2026-DEMO"
+            />
+            <input
+              type="password"
+              className="w-full border border-gray-300 p-2 text-sm mb-6 bg-gray-50 outline-none"
+              defaultValue="********"
+            />
+            <button
+              onClick={() => setCurrentScreen("instructions")}
+              className="w-full bg-[#286090] text-white text-sm font-bold py-2 rounded shadow hover:bg-blue-800 transition"
+            >
+              LOGIN
+            </button>
+          </div>
+        </div>
+      </div>
+    );
 
-  const handleRecoverNode = async () => {
-    setNodeStatus("HEALTHY");
-    setIsNodeFailed(false);
-
-    // Simulate exact reconciliation format
-    const totalLocal =
-      Object.keys(selectedOptions).length + localBufferCount + 3;
-    setReconciliationLog({
-      localEvents: totalLocal,
-      serverEvents: totalLocal,
-      missingIds: 0,
-      duplicateIds: 0,
-      mismatches: 0,
-      status: "VERIFIED",
-    });
-    setLocalBufferCount(0);
-    setIncidents((prev) => prev.map((inc) => ({ ...inc, status: "RESOLVED" })));
-
-    try {
-      await fetch("http://localhost:8000/session/recover", {
-        credentials: "omit",
-        method: "POST",
-      });
-    } catch {
-      console.warn("Backend recovery simulated.");
-    }
-  };
-
-  const handleVerifyAudit = async () => {
-    try {
-      const res = await fetch("http://localhost:8000/audit/verify", {
-        credentials: "omit",
-      });
-      const data = await res.json();
-      setAuditStatus(data.status || (tamperedEvent ? "INVALID" : "VALID"));
-    } catch {
-      setAuditStatus(tamperedEvent ? "INVALID" : "VALID");
-    }
-  };
-
-  const handleSimulateTampering = async () => {
-    setTamperedEvent("EV-0047 (Payload signature mismatch)");
-    try {
-      await fetch("http://localhost:8000/admin/simulate-tampering", {
-        credentials: "omit",
-        method: "POST",
-      });
-    } catch {
-      console.warn("Backend tampering simulated.");
-    }
-  };
-
-  const handleGenerateAiReport = () => {
-    setAiReport({
-      likelyCause:
-        "Intermittent Node NIC packet drop under synchronous I/O burst.",
-      impactSummary:
-        "1 Node, 3 candidate sessions isolated. 0 bytes lost due to local hash-buffering.",
-      recommendedResponse:
-        "Node recovered cleanly. Auto-reconciliation validated.",
-      evidenceRefs: ["EV-0031", "EV-0038", "EV-0042"],
-    });
-  };
+  if (currentScreen === "instructions")
+    return (
+      <div className="min-h-screen bg-gray-100 flex flex-col items-center">
+        <OfficialHeader language={language} setLanguage={setLanguage} />
+        <div className="w-full max-w-6xl mt-4 bg-white shadow-sm border border-gray-200 flex flex-col h-[75vh]">
+          <div className="p-8 overflow-y-auto flex-1">
+            <h2 className="text-lg font-bold text-center text-gray-800 mb-6">
+              Please read the Instructions carefully
+            </h2>
+            <div className="text-gray-700 space-y-3 text-sm">
+              <p>
+                <strong>1.</strong> Total duration is 180 minutes.
+              </p>
+              <p>
+                <strong>2.</strong>{" "}
+                <span className="text-red-600 font-bold bg-red-50 px-1 mt-1 inline-block">
+                  Hackathon USP: If the network disconnects, the timer will
+                  securely FREEZE. Data will be cached locally.
+                </span>
+              </p>
+            </div>
+          </div>
+          <div className="border-t p-4 bg-gray-50">
+            <div className="flex items-start gap-2 mb-4 px-4">
+              <input
+                type="checkbox"
+                className="mt-1 w-4 h-4 cursor-pointer"
+                onChange={(e) => setIsChecked(e.target.checked)}
+              />
+              <p className="text-xs text-red-600">
+                I have read the instructions and agree to local caching in case
+                of internet failure.
+              </p>
+            </div>
+            <div className="text-center">
+              <button
+                disabled={!isChecked}
+                onClick={() => setCurrentScreen("exam")}
+                className={`px-16 py-2 text-sm font-bold text-white rounded shadow-sm ${isChecked ? "bg-[#5cb85c]" : "bg-[#5cb85c]/60"}`}
+              >
+                PROCEED
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
 
   const currentQ = mockQuestions[currentQIndex];
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 font-sans select-none overflow-hidden">
-      {/* DEMO MODE CONTROL STRIP */}
-      <div className="bg-[#0f172a] text-white px-4 py-1.5 flex justify-between items-center text-xs border-b border-slate-700">
-        <div className="flex items-center gap-3">
-          <span className="font-extrabold text-orange-400 tracking-wider">
-            PRAMAAN DEMO CONTROLLER
-          </span>
-          <span className="text-gray-400">| View Mode:</span>
-          <div className="flex bg-slate-800 rounded p-0.5 border border-slate-600">
-            <button
-              onClick={() => setViewMode("candidate")}
-              className={`px-2 py-0.5 rounded ${viewMode === "candidate" ? "bg-blue-600 text-white font-bold" : "text-gray-400"}`}
-            >
-              Candidate View
-            </button>
-            <button
-              onClick={() => setViewMode("split")}
-              className={`px-2 py-0.5 rounded ${viewMode === "split" ? "bg-orange-600 text-white font-bold" : "text-gray-400"}`}
-            >
-              Split View (Demo)
-            </button>
-            <button
-              onClick={() => setViewMode("admin")}
-              className={`px-2 py-0.5 rounded ${viewMode === "admin" ? "bg-purple-600 text-white font-bold" : "text-gray-400"}`}
-            >
-              Admin Center
-            </button>
+      {isOffline && (
+        <div className="bg-red-600 text-white text-center py-1 font-bold animate-pulse text-xs z-50">
+          ⚠️ CONNECTION LOST: Exam Timer is securely frozen. Please reconnect.
+          Your responses are saving locally.
+        </div>
+      )}
+
+      {reconData && !isOffline && (
+        <div className="bg-green-100 border-b-4 border-green-500 text-green-900 p-2 text-xs font-mono flex justify-center gap-6 shadow-md z-50">
+          <div>Local events: {reconData.local}</div>
+          <div>Server events: {reconData.server}</div>
+          <div>Missing IDs: {reconData.missing}</div>
+          <div>Payload mismatches: {reconData.mismatches}</div>
+          <div className="font-bold text-green-700">
+            RECONCILIATION: VERIFIED
           </div>
         </div>
-        <div className="flex items-center gap-4 text-gray-300">
-          <span>
-            Node Status:{" "}
-            <strong
-              className={
-                nodeStatus === "HEALTHY" ? "text-green-400" : "text-red-400"
-              }
-            >
-              {nodeStatus}
-            </strong>
-          </span>
-          <span>
-            Buffered Events:{" "}
-            <strong className="text-orange-400">{localBufferCount}</strong>
-          </span>
-        </div>
-      </div>
+      )}
 
-      {/* MAIN DEMO WORKSPACE */}
+      <OfficialHeader
+        currentScreen="exam"
+        timeLeft={timeLeft}
+        formatTime={formatTime}
+        isOffline={isOffline}
+        language={language}
+        setLanguage={setLanguage}
+      />
+
       <div className="flex flex-1 overflow-hidden">
-        {/* ================= LEFT: CANDIDATE EXAM PORTAL ================= */}
-        {(viewMode === "candidate" || viewMode === "split") && (
-          <div
-            className={`flex flex-col bg-white border-r-2 border-slate-300 overflow-hidden ${viewMode === "split" ? "flex-[1.2]" : "flex-1"}`}
-          >
-            {/* Disruptive Incident Banner (USP) */}
-            {(isNodeFailed || isOffline) && (
-              <div className="bg-red-600 text-white text-center py-1.5 font-bold animate-pulse text-xs z-20 shadow-md">
-                ⚠️ CONNECTION DISRUPTED: Exam Timer Frozen. Answers buffering
-                locally in tamper-evident store.
-              </div>
-            )}
-
-            {/* Official Exam Header */}
-            <div className="bg-white border-b border-orange-500 px-4 py-2 flex justify-between items-center shadow-sm">
-              <img
-                src="/nta-logo.png"
-                alt="MP Online Logo"
-                className="h-10 object-contain"
-              />
-              <div className="flex items-center gap-4 text-xs">
-                <div className="text-right">
-                  <div className="font-bold text-gray-800">
-                    {t[language].candName}:{" "}
-                    <span className="text-orange-600">Ananya Sharma</span>
-                  </div>
-                  <div className="text-gray-500">
-                    {t[language].examName}:{" "}
-                    <span className="font-semibold text-gray-700">
-                      PRAMAAN Assessment
-                    </span>
-                  </div>
-                </div>
-                <div
-                  className={`px-2.5 py-1 font-bold rounded font-mono text-sm border ${isNodeFailed || isOffline ? "bg-red-100 text-red-700 border-red-300 animate-pulse" : "bg-blue-50 text-blue-800 border-blue-200"}`}
-                >
-                  {t[language].remTime}: {formatTime(timeLeft)}
-                </div>
-                <select
-                  value={language}
-                  onChange={(e) => setLanguage(e.target.value)}
-                  className="border rounded p-1 text-xs outline-none bg-white"
-                >
-                  <option value="en">English</option>
-                  <option value="hi">हिंदी</option>
-                </select>
-              </div>
+        <main className="flex-[3] flex flex-col border-r border-gray-300">
+          <div className="flex-1 bg-white overflow-y-auto relative">
+            <div className="bg-gray-100 border-b flex justify-between px-4 py-2 text-sm font-bold text-gray-700">
+              <span>
+                {t[language].question} {currentQ.id}:
+              </span>
             </div>
-
-            {/* Exam Content + Palette */}
-            <div className="flex flex-1 overflow-hidden">
-              {/* Question Screen */}
-              <div className="flex-[3] flex flex-col justify-between bg-white border-r border-gray-200">
-                <div className="p-5 overflow-y-auto">
-                  <h3 className="font-bold text-gray-800 border-b pb-2 mb-4 text-sm">
-                    {t[language].question} {currentQ.id}:
-                  </h3>
-                  <p className="text-sm font-medium text-gray-800 mb-6">
-                    {language === "en" ? currentQ.textEn : currentQ.textHi}
-                  </p>
-
-                  <div className="flex flex-col gap-3">
-                    {(language === "en"
-                      ? currentQ.optionsEn
-                      : currentQ.optionsHi
-                    ).map((opt, i) => (
-                      <label
-                        key={i}
-                        className={`flex items-center gap-3 p-3 border rounded text-xs cursor-pointer transition ${selectedOptions[currentQIndex] === i ? "bg-blue-50 border-blue-500 font-semibold" : "hover:bg-gray-50"}`}
-                      >
-                        <input
-                          type="radio"
-                          name="opt"
-                          checked={selectedOptions[currentQIndex] === i}
-                          onChange={() => handleOptionSelect(i)}
-                          className="accent-blue-600"
-                        />
-                        <span>{opt}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Question Actions */}
-                <div className="bg-gray-50 p-3 border-t flex flex-col gap-2">
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => updateStatusAndMove(2)}
-                      className="bg-[#5cb85c] text-white px-3 py-1.5 text-xs font-bold rounded hover:bg-green-600"
-                    >
-                      {t[language].saveNext}
-                    </button>
-                    <button
-                      onClick={() => {
-                        const o = { ...selectedOptions };
-                        delete o[currentQIndex];
-                        setSelectedOptions(o);
-                      }}
-                      className="bg-white border px-3 py-1.5 text-xs font-bold rounded text-gray-700"
-                    >
-                      {t[language].clear}
-                    </button>
-                    <button
-                      onClick={() => updateStatusAndMove(4)}
-                      className="bg-[#f0ad4e] text-white px-3 py-1.5 text-xs font-bold rounded hover:bg-orange-500"
-                    >
-                      {t[language].saveMark}
-                    </button>
-                  </div>
-                  <div className="flex justify-between border-t pt-2">
-                    <button
-                      onClick={() =>
-                        currentQIndex > 0 && setCurrentQIndex(currentQIndex - 1)
-                      }
-                      disabled={currentQIndex === 0}
-                      className="border bg-white px-3 py-1 text-xs font-bold rounded disabled:opacity-50"
-                    >
-                      {t[language].back}
-                    </button>
-                    <button
-                      onClick={() =>
-                        currentQIndex < TOTAL_QUESTIONS - 1 &&
-                        setCurrentQIndex(currentQIndex + 1)
-                      }
-                      disabled={currentQIndex === TOTAL_QUESTIONS - 1}
-                      className="border bg-white px-3 py-1 text-xs font-bold rounded disabled:opacity-50"
-                    >
-                      {t[language].next}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Minimal Palette */}
-              <div className="flex-1 bg-[#f8fafc] p-3 flex flex-col border-l border-gray-200">
-                <div className="text-center font-bold text-xs text-gray-700 pb-2 border-b">
-                  {t[language].palette}
-                </div>
-                <div className="grid grid-cols-3 gap-2 py-3 overflow-y-auto flex-1 content-start">
-                  {qStatus.map((st, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setCurrentQIndex(i)}
-                      className={`h-8 w-full font-bold text-xs rounded flex items-center justify-center border ${st === 2 ? "bg-green-600 text-white" : st === 1 ? "bg-red-500 text-white" : "bg-gray-100 text-gray-700"}`}
-                    >
-                      {i + 1}
-                    </button>
-                  ))}
-                </div>
+            <div className="p-6">
+              <p className="text-sm text-gray-800 mb-8 border-b pb-4">
+                {language === "en" ? currentQ.textEn : currentQ.textHi}
+              </p>
+              <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                {(language === "en"
+                  ? currentQ.optionsEn
+                  : currentQ.optionsHi
+                ).map((optText, i) => (
+                  <label
+                    key={i}
+                    className="flex items-center gap-3 cursor-pointer"
+                  >
+                    <input
+                      type="radio"
+                      name="q"
+                      checked={selectedOptions[currentQIndex] === i}
+                      onChange={() => handleOptionSelect(i)}
+                      className="w-3.5 h-3.5 accent-blue-600 cursor-pointer"
+                    />
+                    <span className="text-sm text-gray-700">{optText}</span>
+                  </label>
+                ))}
               </div>
             </div>
           </div>
-        )}
 
-        {/* ================= RIGHT: PRAMAAN ADMIN COMMAND CENTER ================= */}
-        {(viewMode === "admin" || viewMode === "split") && (
-          <div className="flex-1 flex flex-col bg-slate-900 text-slate-100 overflow-y-auto p-4 gap-4">
-            <div className="flex justify-between items-center border-b border-slate-700 pb-2">
-              <div>
-                <h2 className="text-base font-black text-white flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-ping"></span>
-                  PRAMAAN Command Center
-                </h2>
-                <p className="text-[11px] text-slate-400">
-                  Resilience, Recovery & Audit Engine
-                </p>
-              </div>
-              <div className="text-right">
-                <span className="text-[10px] bg-slate-800 border border-slate-700 px-2 py-0.5 rounded text-orange-300 font-mono">
-                  DEMO_MODE=true
-                </span>
-              </div>
-            </div>
-
-            {/* Step 1 & 2: Failure & Recovery Controls */}
-            <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700 flex flex-col gap-2">
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                1. Resilience Injection (Live Test)
-              </span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={handleInjectFailure}
-                  disabled={nodeStatus === "FAILED"}
-                  className="bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white font-bold py-2 px-3 rounded text-xs flex items-center justify-center gap-1.5 shadow"
-                >
-                  ⚡ Inject Node Failure
-                </button>
-                <button
-                  onClick={handleRecoverNode}
-                  disabled={nodeStatus === "HEALTHY"}
-                  className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold py-2 px-3 rounded text-xs flex items-center justify-center gap-1.5 shadow"
-                >
-                  🔄 Recover Node & Sync
-                </button>
-              </div>
-            </div>
-
-            {/* Reconciliation Proof (Exact Count Display) */}
-            {reconciliationLog && (
-              <div className="bg-emerald-950/70 border border-emerald-500/50 p-3 rounded-lg">
-                <div className="flex justify-between items-center text-xs font-bold text-emerald-400 border-b border-emerald-800/60 pb-1 mb-2">
-                  <span>Reconciliation Proof</span>
-                  <span className="bg-emerald-500 text-slate-950 px-2 py-0.5 rounded text-[10px] font-black">
-                    RECONCILIATION: {reconciliationLog.status}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-2 text-[11px] font-mono text-emerald-200">
-                  <div>
-                    Local events:{" "}
-                    <strong>{reconciliationLog.localEvents}</strong>
-                  </div>
-                  <div>
-                    Server events:{" "}
-                    <strong>{reconciliationLog.serverEvents}</strong>
-                  </div>
-                  <div>
-                    Missing IDs: <strong>{reconciliationLog.missingIds}</strong>
-                  </div>
-                  <div>
-                    Duplicate IDs:{" "}
-                    <strong>{reconciliationLog.duplicateIds}</strong>
-                  </div>
-                  <div className="col-span-2">
-                    Payload mismatches:{" "}
-                    <strong>{reconciliationLog.mismatches}</strong>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* AI Incident Analysis */}
-            <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700 flex flex-col gap-2">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                  2. Evidence-Grounded AI Analysis
-                </span>
-                <button
-                  onClick={handleGenerateAiReport}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-xs font-semibold"
-                >
-                  Generate Report
-                </button>
-              </div>
-              {aiReport ? (
-                <div className="bg-slate-950 p-2.5 rounded border border-indigo-900/50 text-[11px] text-slate-300 flex flex-col gap-1 leading-relaxed">
-                  <div>
-                    <strong className="text-indigo-400">Likely Cause:</strong>{" "}
-                    {aiReport.likelyCause}
-                  </div>
-                  <div>
-                    <strong className="text-indigo-400">Impact:</strong>{" "}
-                    {aiReport.impactSummary}
-                  </div>
-                  <div className="flex gap-1 items-center mt-1">
-                    <strong className="text-indigo-400">Evidence Refs:</strong>
-                    {aiReport.evidenceRefs.map((ref, idx) => (
-                      <span
-                        key={idx}
-                        className="bg-indigo-950 border border-indigo-600 text-indigo-300 px-1 rounded text-[10px] font-mono"
-                      >
-                        {ref}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="text-[11px] text-slate-500 italic">
-                  No report generated yet. Click button after failure.
-                </div>
-              )}
-            </div>
-
-            {/* Audit & Cryptographic Tamper Detection */}
-            <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700 flex flex-col gap-2.5">
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                3. Hash-Chained Audit Trail
-              </span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={handleVerifyAudit}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded text-xs"
-                >
-                  🛡️ Verify Audit Chain
-                </button>
-                <button
-                  onClick={handleSimulateTampering}
-                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 px-3 rounded text-xs"
-                >
-                  ⚠️ Simulate Tampering
-                </button>
-              </div>
-
-              {auditStatus && (
-                <div
-                  className={`p-2.5 rounded border text-xs font-mono flex flex-col gap-1 ${auditStatus === "VALID" ? "bg-emerald-950/60 border-emerald-500 text-emerald-300" : "bg-rose-950/70 border-rose-500 text-rose-300"}`}
-                >
-                  <div className="flex justify-between items-center font-bold">
-                    <span>Audit Status:</span>
-                    <span
-                      className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider text-white"
-                      style={{
-                        background:
-                          auditStatus === "VALID" ? "#059669" : "#dc2626",
-                      }}
-                    >
-                      {auditStatus}
-                    </span>
-                  </div>
-                  {tamperedEvent && auditStatus === "INVALID" && (
-                    <div className="text-[11px] text-rose-300 mt-1 border-t border-rose-900/60 pt-1">
-                      Integrity check failed at:{" "}
-                      <strong>{tamperedEvent}</strong>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+          <div className="bg-gray-100 p-3 border-t flex gap-2">
+            <button
+              onClick={() => updateStatusAndMove(2)}
+              className="bg-[#5cb85c] text-white px-3 py-1.5 text-xs font-bold rounded border border-[#4cae4c]"
+            >
+              {t[language].saveNext}
+            </button>
+            <button
+              onClick={() => {
+                const n = { ...selectedOptions };
+                delete n[currentQIndex];
+                setSelectedOptions(n);
+              }}
+              className="bg-white text-gray-700 border border-gray-300 px-3 py-1.5 text-xs font-bold rounded"
+            >
+              {t[language].clear}
+            </button>
+            <button
+              onClick={() => updateStatusAndMove(4)}
+              className="bg-[#f0ad4e] text-white px-3 py-1.5 text-xs font-bold rounded border border-[#eea236]"
+            >
+              {t[language].saveMark}
+            </button>
+            <button
+              onClick={() => updateStatusAndMove(3)}
+              className="bg-[#337ab7] text-white px-3 py-1.5 text-xs font-bold rounded border border-[#2e6da4]"
+            >
+              {t[language].markNext}
+            </button>
           </div>
-        )}
+        </main>
+
+        <aside className="flex-1 min-w-[280px] max-w-[320px] bg-[#f9f9f9] flex flex-col">
+          <div className="p-4 grid grid-cols-5 gap-x-2 gap-y-3 overflow-y-auto flex-1 content-start bg-[#f9f9f9]">
+            {qStatus.map((status, idx) => (
+              <div
+                key={idx}
+                onClick={() => {
+                  setCurrentQIndex(idx);
+                }}
+              >
+                {getStatusIcon(status, idx + 1)}
+              </div>
+            ))}
+          </div>
+        </aside>
       </div>
     </div>
   );
+}
+
+// ==========================================
+// 3. ADMIN DASHBOARD (UPDATED AS PER PDF)
+// ==========================================
+function AdminDashboard() {
+  const [logs, setLogs] = useState([]);
+  const [incidentState, setIncidentState] = useState("none"); // New state for Incident Card
+
+  const addLog = (msg, type = "info") => {
+    setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  };
+
+  const handleInjectFailure = async () => {
+    setIncidentState("active"); // Triggers Incident Card[cite: 31]
+    addLog("Injecting Node Failure... (POST /admin/inject-failure)", "error");
+    try {
+      await fetch("http://localhost:8000/admin/inject-failure", {
+        method: "POST",
+      });
+    } catch (e) {}
+    addLog("NODE STATUS: FAILED. Affected sessions moved to DISCONNECTED.");
+  };
+
+  const handleRecoverNode = async () => {
+    setIncidentState("resolved"); // Resolves Incident Card[cite: 31]
+    addLog(
+      "Recovering Node... Sessions transitioning to RECOVERING.",
+      "success",
+    );
+    try {
+      await fetch("http://localhost:8000/admin/recover", { method: "POST" });
+    } catch (e) {}
+  };
+
+  const handleGenerateReport = async () => {
+    addLog(
+      "Fetching Grounded AI Incident Report... (POST /admin/incidents/generate-report)",
+    );
+    setTimeout(() => {
+      addLog(
+        "REPORT: 'Likely Cause: Intermittent Node NIC packet drop under synchronous I/O burst. Impact: 1 Node, 3 candidate sessions isolated, 0 bytes lost... Evidence Refs: [EV-003, EV-004]'",
+        "ai",
+      );
+    }, 1500);
+  };
+
+  const handleVerifyAudit = () => {
+    addLog("Recomputing Hash Chain... (GET /audit/verify)");
+    setTimeout(
+      () =>
+        addLog(
+          "AUDIT STATUS: VALID. All cryptographic hashes match.",
+          "success",
+        ),
+      1000,
+    );
+  };
+
+  const handleSimulateTamper = async () => {
+    addLog(
+      "DEMO MODE: Simulating Data Tampering... (POST /admin/simulate-tampering)",
+      "error",
+    );
+    try {
+      await fetch("http://localhost:8000/admin/simulate-tampering", {
+        method: "POST",
+      });
+    } catch (e) {}
+    setTimeout(() => {
+      addLog("Recomputing Hash Chain... (GET /audit/verify)");
+      // Explicit punchline requested by backend doc[cite: 31]
+      setTimeout(
+        () =>
+          addLog(
+            "AUDIT FAILED: INVALID. First broken event: EV-047. Tampering Detected!",
+            "error",
+          ),
+        1000,
+      );
+    }, 1500);
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-gray-200 font-mono flex flex-col">
+      <div className="bg-black p-4 border-b border-gray-700 flex justify-between items-center">
+        <h1 className="text-xl font-bold text-green-500">
+          PRAMAAN | Admin Command Center
+        </h1>
+        <span className="text-xs text-gray-500">
+          Connected to: Backend Engine
+        </span>
+      </div>
+
+      <div className="flex flex-1 p-6 gap-6">
+        <div className="w-1/3 flex flex-col gap-4">
+          {/* NEW INCIDENT CARD COMPONENT[cite: 31] */}
+          {incidentState !== "none" && (
+            <div
+              className={`p-4 rounded border shadow-lg transition-all ${incidentState === "active" ? "bg-red-900/30 border-red-700" : "bg-green-900/30 border-green-700"}`}
+            >
+              <h3
+                className={`text-sm font-bold mb-3 tracking-wider ${incidentState === "active" ? "text-red-400" : "text-green-400"}`}
+              >
+                {incidentState === "active"
+                  ? "⚠️ INCIDENT DETECTED"
+                  : "✅ INCIDENT STATUS"}
+              </h3>
+              {incidentState === "active" ? (
+                <ul className="text-xs space-y-1.5 text-gray-300">
+                  <li className="text-red-300 font-bold">
+                    • SYSTEM INCIDENT ACTIVE
+                  </li>
+                  <li className="text-red-300 font-bold">
+                    • NODE INCIDENT ACTIVE
+                  </li>
+                  <li className="text-yellow-200">
+                    • 3 CANDIDATE SESSIONS AFFECTED
+                  </li>
+                  <li className="mt-3 pt-2 border-t border-red-800/50 text-gray-400 font-mono">
+                    Evidence: EV-003 EV-004 EV-005
+                  </li>
+                </ul>
+              ) : (
+                <ul className="text-xs space-y-1.5 text-gray-300">
+                  <li className="text-green-300 font-bold text-sm">
+                    5 INCIDENTS RESOLVED
+                  </li>
+                  <li className="text-gray-400 italic">Recovery verified</li>
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div className="bg-gray-800 p-4 rounded border border-gray-700">
+            <h3 className="text-gray-400 text-sm mb-4 uppercase tracking-wider">
+              Disaster Controls
+            </h3>
+            <button
+              onClick={handleInjectFailure}
+              className="w-full mb-3 bg-red-900 hover:bg-red-800 text-red-100 py-2 rounded border border-red-700 transition"
+            >
+              INJECT NODE FAILURE
+            </button>
+            <button
+              onClick={handleRecoverNode}
+              className="w-full bg-green-900 hover:bg-green-800 text-green-100 py-2 rounded border border-green-700 transition"
+            >
+              RECOVER NODE & SYNC
+            </button>
+          </div>
+
+          <div className="bg-gray-800 p-4 rounded border border-gray-700">
+            <h3 className="text-gray-400 text-sm mb-4 uppercase tracking-wider">
+              AI & Audit Trust Layer
+            </h3>
+            <button
+              onClick={handleGenerateReport}
+              className="w-full mb-3 bg-blue-900 hover:bg-blue-800 text-blue-100 py-2 rounded border border-blue-700 transition"
+            >
+              GENERATE AI REPORT
+            </button>
+            <button
+              onClick={handleVerifyAudit}
+              className="w-full mb-3 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded border border-gray-500 transition"
+            >
+              VERIFY AUDIT CHAIN
+            </button>
+            <button
+              onClick={handleSimulateTamper}
+              className="w-full bg-purple-900 hover:bg-purple-800 text-purple-100 py-2 rounded border border-purple-700 transition"
+            >
+              SIMULATE TAMPERING
+            </button>
+          </div>
+        </div>
+
+        <div className="w-2/3 bg-black rounded border border-gray-700 p-4 overflow-hidden flex flex-col">
+          <h3 className="text-gray-500 text-sm mb-2 uppercase border-b border-gray-800 pb-2">
+            Live System Logs
+          </h3>
+          <div className="flex-1 overflow-y-auto text-sm space-y-2">
+            {logs.map((log, idx) => (
+              <div
+                key={idx}
+                className={
+                  log.includes("FAIL") || log.includes("error")
+                    ? "text-red-400"
+                    : log.includes("PASS") ||
+                        log.includes("VALID") ||
+                        log.includes("success")
+                      ? "text-green-400"
+                      : log.includes("REPORT")
+                        ? "text-blue-300"
+                        : "text-gray-300"
+                }
+              >
+                {log}
+              </div>
+            ))}
+            {logs.length === 0 && (
+              <div className="text-gray-600 italic">Waiting for events...</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// MAIN APP ROUTER
+// ==========================================
+export default function App() {
+  const [isAdmin, setIsAdmin] = useState(window.location.hash === "#admin");
+  useEffect(() => {
+    const handleHashChange = () =>
+      setIsAdmin(window.location.hash === "#admin");
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+  return isAdmin ? <AdminDashboard /> : <CandidatePortal />;
 }

@@ -3,13 +3,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DbSession
 
-from app.api.errors import (
-    ForeignExamQuestion,
-    InvalidState,
-    NodeUnavailable,
-    NotFound,
-    SessionApiError,
-)
+from app.api.errors import SessionApiError
+from app.api.http_errors import raise_mapped, refresh_incidents
 from app.api.schemas import (
     AnswerRequest,
     AnswerResponse,
@@ -29,19 +24,6 @@ from app.services import recovery_service, session_service
 router = APIRouter(prefix="/session", tags=["session"])
 
 
-def _raise_mapped(exc: SessionApiError) -> None:
-    if isinstance(exc, NotFound):
-        raise HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, NodeUnavailable):
-        # Infrastructure-level outage: the client should retry after recovery.
-        raise HTTPException(status_code=503, detail=str(exc))
-    if isinstance(exc, InvalidState):
-        raise HTTPException(status_code=409, detail=str(exc))
-    if isinstance(exc, ForeignExamQuestion):
-        raise HTTPException(status_code=422, detail=str(exc))
-    raise HTTPException(status_code=500, detail="internal error")
-
-
 @router.post("/start", response_model=StartSessionResponse)
 def start_session(body: StartSessionRequest, db: DbSession = Depends(get_db)):
     try:
@@ -52,7 +34,7 @@ def start_session(body: StartSessionRequest, db: DbSession = Depends(get_db)):
             node_id=body.node_id,
         )
     except SessionApiError as exc:
-        _raise_mapped(exc)
+        raise_mapped(exc)
     return StartSessionResponse(
         session_id=session.id,
         exam_id=session.exam_id,
@@ -77,7 +59,7 @@ def save_answer(session_id: int, body: AnswerRequest, db: DbSession = Depends(ge
             client_timestamp=body.client_timestamp,
         )
     except SessionApiError as exc:
-        _raise_mapped(exc)
+        raise_mapped(exc)
     except Exception as exc:
         if getattr(exc, "projection_failed", False):
             raise HTTPException(
@@ -101,7 +83,7 @@ def heartbeat(session_id: int, body: HeartbeatRequest, db: DbSession = Depends(g
             db, session_id=session_id, client_event_id=body.client_event_id
         )
     except SessionApiError as exc:
-        _raise_mapped(exc)
+        raise_mapped(exc)
     except Exception as exc:
         if getattr(exc, "projection_failed", False):
             raise HTTPException(
@@ -126,13 +108,19 @@ def reconcile(session_id: int, body: ReconcileRequest, db: DbSession = Depends(g
             items=[item.model_dump() for item in body.events],
         )
     except SessionApiError as exc:
-        _raise_mapped(exc)
+        raise_mapped(exc)
     except Exception as exc:
         if getattr(exc, "projection_failed", False):
             raise HTTPException(
                 status_code=500, detail="event stored; projection_failed"
             )
         raise
+
+    # A completed reconciliation can resolve incidents; keep them current
+    # without requiring a separate manual evaluation call.
+    if report["complete"]:
+        refresh_incidents(db, exam_id=report["session"].exam_id)
+
     return ReconcileResponse(
         session_id=session_id,
         status=report["status"],
@@ -154,7 +142,7 @@ def session_state(session_id: int, db: DbSession = Depends(get_db)):
     try:
         state = session_service.get_session_state(db, session_id=session_id)
     except SessionApiError as exc:
-        _raise_mapped(exc)
+        raise_mapped(exc)
     session = state["session"]
     return SessionStateResponse(
         session_id=session.id,
