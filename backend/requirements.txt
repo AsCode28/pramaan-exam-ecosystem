@@ -1,5 +1,0 @@
-fastapi
-uvicorn
-pydantic-settings
-sqlalchemy>=2.0
-pytest
