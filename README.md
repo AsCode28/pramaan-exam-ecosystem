@@ -161,5 +161,5 @@ To demonstrate the backend's resilience mechanisms visually, this prototype incl
 cd frontend
 npm install
 npm run dev
-
+```
 Open http://localhost:5173 in your browser and select the Split View (Demo) mode from the top controller strip to begin the visual walkthrough.
