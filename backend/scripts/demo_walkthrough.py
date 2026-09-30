@@ -149,7 +149,7 @@ def stage_preflight(client: DemoClient) -> None:
 
 
 def stage_create_scenario(client: DemoClient) -> dict:
-    """POST /demo/scenario/create -> one exam, node, 3 candidates, 3 questions."""
+    """POST /demo/scenario/create -> one exam, node, 3 candidates, 15 questions."""
     scenario = client.post("/demo/scenario/create")
     require_fields(
         scenario,
@@ -161,8 +161,8 @@ def stage_create_scenario(client: DemoClient) -> dict:
         f"scenario/create: expected 3 candidates, got {scenario['candidate_ids']}",
     )
     require(
-        len(scenario["question_ids"]) == 3,
-        f"scenario/create: expected 3 questions, got {scenario['question_ids']}",
+        len(scenario["question_ids"]) == 15,
+        f"scenario/create: expected 15 questions, got {scenario['question_ids']}",
     )
     ok(
         f"exam_id={scenario['exam_id']} node_id={scenario['node_id']} "

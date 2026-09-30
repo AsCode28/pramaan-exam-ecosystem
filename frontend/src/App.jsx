@@ -1,10 +1,27 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import {
+  API_BASE,
+  analyzeIncident,
+  createDemoScenario,
+  failNode,
+  getDemoOverview,
+  listIncidents,
+  reconcileSession,
+  recoverNode,
+  saveAnswer,
+  simulateTampering,
+  startSession,
+  verifyAudit,
+} from "./api";
 
-const TOTAL_QUESTIONS = 15;
-const mockQuestions = Array.from({ length: TOTAL_QUESTIONS }, (_, i) => ({
-  id: i + 1,
-  textEn: `(Prototype Question ${i + 1}) What is the primary fallback mechanism during a network failure in this ecosystem?`,
-  textHi: `(प्रोटोटाइप प्रश्न ${i + 1}) इस इकोसिस्टम में नेटवर्क विफलता के दौरान प्राथमिक फ़ॉलबैक मैकेनिज्म क्या है?`,
+// The command center polls the read-only overview endpoint continuously.
+const OVERVIEW_POLL_MS = 1500;
+
+// Display copy only. The question ids and the question count come from
+// POST /demo/scenario/create, never from this template.
+const questionCopy = (position) => ({
+  textEn: `(Question ${position}) What is the primary fallback mechanism during a network failure in this ecosystem?`,
+  textHi: `(प्रश्न ${position}) इस इकोसिस्टम में नेटवर्क विफलता के दौरान प्राथमिक फ़ॉलबैक मैकेनिज्म क्या है?`,
   optionsEn: [
     "Option 1: Auto-submit",
     "Option 2: Local Caching & Sync",
@@ -17,7 +34,13 @@ const mockQuestions = Array.from({ length: TOTAL_QUESTIONS }, (_, i) => ({
     "विकल्प 3: परीक्षा समाप्त करें",
     "विकल्प 4: पेज रिफ्रेश करें",
   ],
-}));
+});
+
+// Buffer entries must be stable client_event_ids so a later reconciliation can
+// be matched against what the ledger already acknowledged.
+const newClientEventId = () =>
+  globalThis.crypto?.randomUUID?.() ??
+  `client-event-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const t = {
   en: {
@@ -70,26 +93,148 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState("exam"); // Defaults to exam for direct interaction demo
   const [language, setLanguage] = useState("en");
 
+  // --- Live backend wiring ---
+  // bootstrap: 'loading' | 'ready' | 'error'
+  const [bootstrap, setBootstrap] = useState({ status: "loading", error: null });
+  const [scenario, setScenario] = useState(null); // { examId, nodeId, candidateIds, questionIds }
+  const [sessions, setSessions] = useState([]); // real Session rows started via POST /session/start
+  const [overview, setOverview] = useState(null); // GET /demo/overview/{exam_id}
+  const [overviewError, setOverviewError] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const [busyAction, setBusyAction] = useState(null);
+
   // Candidate Exam States
-  const [isNodeFailed, setIsNodeFailed] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [timeLeft, setTimeLeft] = useState(10800);
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [selectedOptions, setSelectedOptions] = useState({});
-  const [qStatus, setQStatus] = useState(
-    Array(TOTAL_QUESTIONS)
-      .fill(0)
-      .map((_, i) => (i === 0 ? 1 : 0)),
-  );
-  const [localBufferCount, setLocalBufferCount] = useState(0);
+  const [qStatus, setQStatus] = useState([]);
+  // Answers captured while the node is unreachable, replayed on reconciliation.
+  const [localBuffer, setLocalBuffer] = useState([]);
+  const [savedToLedger, setSavedToLedger] = useState(0);
 
-  // Admin & Audit States
-  const [nodeStatus, setNodeStatus] = useState("HEALTHY"); // HEALTHY | FAILED
+  // Admin & Audit States (all values come from the backend)
   const [incidents, setIncidents] = useState([]);
   const [reconciliationLog, setReconciliationLog] = useState(null);
-  const [auditStatus, setAuditStatus] = useState(null); // 'VALID' | 'INVALID' | null
-  const [tamperedEvent, setTamperedEvent] = useState(null);
-  const [aiReport, setAiReport] = useState(null);
+  const [auditResult, setAuditResult] = useState(null); // AuditVerifyResponse
+  const [tamperResult, setTamperResult] = useState(null); // DemoTamperResponse
+  const [aiReport, setAiReport] = useState(null); // AIAnalysisResponse
+  const [aiError, setAiError] = useState(null);
+
+  const TOTAL_QUESTIONS = scenario?.questionIds?.length ?? 0;
+  const questions = useMemo(
+    () =>
+      (scenario?.questionIds ?? []).map((id, i) => ({ id, ...questionCopy(i + 1) })),
+    [scenario],
+  );
+
+  // The candidate portal drives the first real session returned by /session/start.
+  const activeSession = sessions[0] ?? null;
+  const activeSessionId = activeSession?.session_id ?? null;
+  const localBufferCount = localBuffer.length;
+
+  // The node drives the disruption banner and the timer freeze, straight from
+  // the polled overview rather than from any optimistic local guess.
+  const nodeStatus = overview?.nodes?.[0]?.status ?? null;
+  const nodeHealth = overview?.nodes?.[0]?.health ?? null;
+  const isNodeFailed = nodeStatus === "FAILED";
+  const auditStatus = auditResult
+    ? auditResult.valid
+      ? "VALID"
+      : "INVALID"
+    : null;
+
+  // --- Bootstrap: one demo scenario + one real session per candidate ---
+  // bootstrappedRef guarantees only ONE request sequence is ever created, so a
+  // StrictMode remount never provisions a second scenario. mountedRef is
+  // re-armed at the top of EVERY effect invocation, so the already-running
+  // sequence can still apply its state once the remount happens.
+  const bootstrappedRef = useRef(false);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+
+    if (bootstrappedRef.current) {
+      // A remount is in progress: do not bootstrap again, but keep
+      // mountedRef true so the in-flight sequence can finish.
+      return () => {
+        mountedRef.current = false;
+      };
+    }
+    bootstrappedRef.current = true;
+
+    (async () => {
+      try {
+        const created = await createDemoScenario();
+        const nextScenario = {
+          examId: created.exam_id,
+          nodeId: created.node_id,
+          candidateIds: created.candidate_ids,
+          questionIds: created.question_ids,
+        };
+        if (!mountedRef.current) return;
+        setScenario(nextScenario);
+        // Palette is sized from the questions the backend actually provisioned.
+        setQStatus(
+          Array.from({ length: nextScenario.questionIds.length }, (_, i) =>
+            i === 0 ? 1 : 0,
+          ),
+        );
+
+        // Start one real session per candidate and keep the returned ids.
+        const started = [];
+        for (const candidateId of nextScenario.candidateIds) {
+          const s = await startSession({
+            examId: nextScenario.examId,
+            candidateId,
+            nodeId: nextScenario.nodeId,
+          });
+          started.push(s);
+        }
+        if (!mountedRef.current) return;
+        setSessions(started);
+        setBootstrap({ status: "ready", error: null });
+      } catch (err) {
+        if (!mountedRef.current) return;
+        setBootstrap({ status: "error", error: err.message });
+      }
+    })();
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // --- Poll GET /demo/overview/{exam_id} as the single source of truth ---
+  const refreshOverview = useCallback(async () => {
+    if (!scenario?.examId) return;
+    try {
+      const [overviewData, incidentData] = await Promise.all([
+        getDemoOverview(scenario.examId),
+        listIncidents(scenario.examId),
+      ]);
+      setOverview(overviewData);
+      setIncidents(incidentData?.incidents ?? []);
+      setOverviewError(null);
+    } catch (err) {
+      setOverviewError(err.message);
+    }
+  }, [scenario]);
+
+  useEffect(() => {
+    if (bootstrap.status !== "ready" || !scenario?.examId) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      await refreshOverview();
+    };
+    tick();
+    const id = setInterval(tick, OVERVIEW_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [bootstrap.status, scenario?.examId, refreshOverview]);
 
   // Timer Freeze Logic (USP)
   useEffect(() => {
@@ -125,8 +270,43 @@ export default function App() {
   };
 
   // --- Candidate Handlers ---
+  // Answers are written to the ledger through the real session id. When the
+  // node is unreachable the entry is held in the local buffer instead, so it
+  // can be replayed through the real reconciliation endpoint later.
+  const persistAnswer = async (questionId, answer) => {
+    if (!activeSessionId || questionId == null) return;
+    const entry = {
+      client_event_id: newClientEventId(),
+      question_id: questionId,
+      answer,
+      client_timestamp: new Date().toISOString(),
+    };
+
+    if (isNodeFailed || isOffline) {
+      setLocalBuffer((prev) => [...prev, entry]);
+      return;
+    }
+
+    try {
+      // api.saveAnswer() destructures camelCase; the buffer entry stays
+      // snake_case because that is the wire format reconciliation posts.
+      await saveAnswer(activeSessionId, {
+        questionId: entry.question_id,
+        answer: entry.answer,
+        clientEventId: entry.client_event_id,
+        clientTimestamp: entry.client_timestamp,
+      });
+      setSavedToLedger((n) => n + 1);
+    } catch (err) {
+      // Keep it buffered rather than dropping a candidate answer on the floor.
+      setLocalBuffer((prev) => [...prev, entry]);
+      setActionError(`Answer buffered locally: ${err.message}`);
+    }
+  };
+
   const handleOptionSelect = (optIndex) => {
-    setSelectedOptions({ ...selectedOptions, [currentQIndex]: optIndex });
+    setSelectedOptions((prev) => ({ ...prev, [currentQIndex]: optIndex }));
+    persistAnswer(questions[currentQIndex]?.id, String(optIndex));
   };
 
   const updateStatusAndMove = (newStatus, moveDirection = 1) => {
@@ -140,108 +320,199 @@ export default function App() {
     }
     setQStatus(newQStatus);
 
-    // Buffering responses locally during disruption
-    if (isNodeFailed || isOffline) {
-      setLocalBufferCount((prev) => prev + 1);
-    }
     localStorage.setItem(
       "examState",
       JSON.stringify({ selectedOptions, qStatus: newQStatus }),
     );
   };
 
-  // --- Admin API Triggers (Backend Sync) ---
+  // --- Admin API Triggers (real backend, no local fallbacks) ---
   const handleInjectFailure = async () => {
-    setNodeStatus("FAILED");
-    setIsNodeFailed(true);
-    setReconciliationLog(null);
-    setIncidents([
-      {
-        id: "INC-9042",
-        severity: "NODE_FAILURE",
-        target: "Node-01 (Bhopal Center)",
-        time: new Date().toLocaleTimeString(),
-        status: "OPEN",
-      },
-    ]);
+    if (!scenario?.nodeId) return;
+    setBusyAction("fail");
+    setActionError(null);
     try {
-      await fetch("http://localhost:8000/admin/inject-failure", {
-        credentials: "omit",
-        method: "POST",
-      });
-    } catch {
-      console.warn("Backend /admin/inject-failure simulated.");
+      // UI state is driven by the next overview poll, so nothing is set here
+      // until the backend has actually confirmed the failure.
+      await failNode(scenario.nodeId, "demo power cut");
+      setReconciliationLog(null);
+      await refreshOverview();
+    } catch (err) {
+      setActionError(`Failed to inject node failure: ${err.message}`);
+    } finally {
+      setBusyAction(null);
     }
   };
 
   const handleRecoverNode = async () => {
-    setNodeStatus("HEALTHY");
-    setIsNodeFailed(false);
-
-    // Simulate exact reconciliation format
-    const totalLocal =
-      Object.keys(selectedOptions).length + localBufferCount + 3;
-    setReconciliationLog({
-      localEvents: totalLocal,
-      serverEvents: totalLocal,
-      missingIds: 0,
-      duplicateIds: 0,
-      mismatches: 0,
-      status: "VERIFIED",
-    });
-    setLocalBufferCount(0);
-    setIncidents((prev) => prev.map((inc) => ({ ...inc, status: "RESOLVED" })));
-
+    if (!scenario?.nodeId) return;
+    setBusyAction("recover");
+    setActionError(null);
     try {
-      await fetch("http://localhost:8000/session/recover", {
-        credentials: "omit",
-        method: "POST",
+      await recoverNode(scenario.nodeId, "demo recovery");
+
+      // Reconcile every stored session against the real endpoint. Sessions the
+      // backend did not move into RECOVERING answer 409, which is reported
+      // rather than papered over.
+      const perSession = [];
+      for (const s of sessions) {
+        // Buffered answers belong to the candidate session that created them;
+        // the other sessions reconcile with an empty batch, which the backend
+        // treats as a clean recovery.
+        const buffered =
+          s.session_id === activeSessionId
+            ? localBuffer.map((b) => ({
+                client_event_id: b.client_event_id,
+                question_id: b.question_id,
+                answer: b.answer,
+                client_timestamp: b.client_timestamp,
+              }))
+            : [];
+        try {
+          const report = await reconcileSession(s.session_id, buffered);
+          perSession.push({ session_id: s.session_id, ok: true, report });
+        } catch (err) {
+          perSession.push({
+            session_id: s.session_id,
+            ok: false,
+            error: err.message,
+          });
+        }
+      }
+
+      // Counts are summed straight from the reconciliation reports.
+      const ok = perSession.filter((r) => r.ok).map((r) => r.report);
+      const sum = (key) =>
+        ok.reduce((acc, r) => acc + (r[key]?.length ?? 0), 0);
+      const completeCount = ok.filter((r) => r.reconciliation_complete).length;
+
+      setReconciliationLog({
+        status:
+          completeCount === sessions.length && sessions.length > 0
+            ? "VERIFIED"
+            : "INCOMPLETE",
+        sessionsAttempted: sessions.length,
+        sessionsReconciled: completeCount,
+        submitted: sum("submitted_client_event_ids"),
+        acknowledged: sum("acknowledged_client_event_ids"),
+        newly: sum("newly_reconciled_client_event_ids"),
+        missing: sum("missing_client_event_ids"),
+        mismatched: sum("mismatched_client_event_ids"),
+        rejected: sum("rejected_client_event_ids"),
+        perSession,
       });
-    } catch {
-      console.warn("Backend recovery simulated.");
+
+      setLocalBuffer([]);
+      await refreshOverview();
+    } catch (err) {
+      setActionError(`Recovery failed: ${err.message}`);
+    } finally {
+      setBusyAction(null);
     }
   };
 
   const handleVerifyAudit = async () => {
+    setBusyAction("audit");
+    setActionError(null);
     try {
-      const res = await fetch("http://localhost:8000/audit/verify", {
-        credentials: "omit",
-      });
-      const data = await res.json();
-      setAuditStatus(data.status || (tamperedEvent ? "INVALID" : "VALID"));
-    } catch {
-      setAuditStatus(tamperedEvent ? "INVALID" : "VALID");
+      const result = await verifyAudit();
+      setAuditResult(result);
+    } catch (err) {
+      setAuditResult(null);
+      setActionError(`Audit verification failed: ${err.message}`);
+    } finally {
+      setBusyAction(null);
     }
   };
 
   const handleSimulateTampering = async () => {
-    setTamperedEvent("EV-0047"); // Updated to match PDF exact requirement
+    setBusyAction("tamper");
+    setActionError(null);
     try {
-      await fetch("http://localhost:8000/admin/simulate-tampering", {
-        credentials: "omit",
-        method: "POST",
-      });
-    } catch {
-      console.warn("Backend tampering simulated.");
+      // The backend resolves "latest" to the real highest sequence number, so
+      // no event id is ever hardcoded here.
+      const result = await simulateTampering("payload");
+      setTamperResult(result);
+    } catch (err) {
+      setTamperResult(null);
+      setActionError(`Tamper simulation failed: ${err.message}`);
+    } finally {
+      setBusyAction(null);
     }
   };
 
-  const handleGenerateAiReport = () => {
-    setAiReport({
-      likelyCause:
-        "Intermittent Node NIC packet drop under synchronous I/O burst.",
-      impactSummary:
-        "1 Node, 3 candidate sessions isolated. 0 bytes lost due to local hash-buffering.",
-      recommendedResponse:
-        "Node recovered cleanly. Auto-reconciliation validated.",
-      evidenceRefs: ["EV-0031", "EV-0038", "EV-0042"],
-    });
+  const handleGenerateAiReport = async () => {
+    // Pick a real incident from the list the backend just returned.
+    const target =
+      incidents.find((i) => i.status === "ACTIVE") ?? incidents[incidents.length - 1];
+    if (!target) {
+      setAiError(
+        "No incident available yet. Inject a node failure from this screen first.",
+      );
+      setAiReport(null);
+      return;
+    }
+    setBusyAction("ai");
+    setAiError(null);
+    try {
+      const report = await analyzeIncident(target.id);
+      setAiReport(report);
+    } catch (err) {
+      setAiReport(null);
+      setAiError(`Analysis unavailable: ${err.message}`);
+    } finally {
+      setBusyAction(null);
+    }
   };
 
-  const currentQ = mockQuestions[currentQIndex];
+  const currentQ = questions[currentQIndex];
+
+  // --- Bootstrap gate: never render a demo shell over a dead backend ---
+  if (bootstrap.status !== "ready") {
+    return (
+      <div className="flex h-screen bg-gray-100 font-sans items-center justify-center p-6">
+        <div className="max-w-lg w-full bg-white rounded-lg shadow-lg border border-gray-200 p-6 text-center">
+          <h1 className="text-lg font-black text-gray-800 mb-2">
+            PRAMAAN DEMO CONTROLLER
+          </h1>
+          {bootstrap.status === "loading" ? (
+            <>
+              <p className="text-sm text-gray-600">
+                Creating the demo scenario and starting candidate sessions on{" "}
+                <span className="font-mono text-xs">{API_BASE}</span>…
+              </p>
+              <div className="mt-4 h-1.5 w-full bg-gray-200 rounded overflow-hidden">
+                <div className="h-full w-1/2 bg-orange-500 animate-pulse" />
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-red-700 mb-2">
+                Cannot start the demo.
+              </p>
+              <p className="text-xs text-gray-600 font-mono break-words">
+                {bootstrap.error}
+              </p>
+              <p className="text-xs text-gray-500 mt-3">
+                Start the backend at <span className="font-mono">{API_BASE}</span>{" "}
+                and reload this page.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 font-sans select-none overflow-hidden">
+      {/* Connection / API error strip */}
+      {(overviewError || actionError) && (
+        <div className="bg-red-600 text-white text-center py-1.5 px-4 text-xs font-semibold z-30">
+          {overviewError ? `Overview sync error: ${overviewError}` : actionError}
+        </div>
+      )}
+
       {/* DEMO MODE CONTROL STRIP */}
       <div className="bg-[#0f172a] text-white px-4 py-1.5 flex justify-between items-center text-xs border-b border-slate-700">
         <div className="flex items-center gap-3">
@@ -271,19 +542,31 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-4 text-gray-300">
+          <span className="font-mono text-[10px] text-slate-500">
+            exam #{scenario?.examId} · node #{scenario?.nodeId} · session #
+            {activeSessionId ?? "—"} · {sessions.length} sessions
+          </span>
           <span>
             Node Status:{" "}
             <strong
               className={
-                nodeStatus === "HEALTHY" ? "text-green-400" : "text-red-400"
+                nodeStatus === "FAILED"
+                  ? "text-red-400"
+                  : nodeStatus === "DEGRADED"
+                    ? "text-amber-400"
+                    : "text-green-400"
               }
             >
-              {nodeStatus}
+              {nodeStatus ?? "LOADING…"}
             </strong>
           </span>
           <span>
             Buffered Events:{" "}
             <strong className="text-orange-400">{localBufferCount}</strong>
+          </span>
+          <span>
+            Answers Synced:{" "}
+            <strong className="text-green-400">{savedToLedger}</strong>
           </span>
         </div>
       </div>
@@ -314,12 +597,14 @@ export default function App() {
                 <div className="text-right">
                   <div className="font-bold text-gray-800">
                     {t[language].candName}:{" "}
-                    <span className="text-orange-600">Ananya Sharma</span>
+                    <span className="text-orange-600">
+                      Candidate #{activeSession?.candidate_id ?? "—"}
+                    </span>
                   </div>
                   <div className="text-gray-500">
                     {t[language].examName}:{" "}
                     <span className="font-semibold text-gray-700">
-                      PRAMAAN Assessment
+                      {overview?.exam?.title ?? "—"}
                     </span>
                   </div>
                 </div>
@@ -345,7 +630,7 @@ export default function App() {
               <div className="flex-[3] flex flex-col justify-between bg-white border-r border-gray-200">
                 <div className="p-5 overflow-y-auto">
                   <h3 className="font-bold text-gray-800 border-b pb-2 mb-4 text-sm">
-                    {t[language].question} {currentQ.id}:
+                    {t[language].question} {currentQIndex + 1}:
                   </h3>
                   <p className="text-sm font-medium text-gray-800 mb-6">
                     {language === "en" ? currentQ.textEn : currentQ.textHi}
@@ -459,48 +744,69 @@ export default function App() {
               </div>
               <div className="text-right">
                 <span className="text-[10px] bg-slate-800 border border-slate-700 px-2 py-0.5 rounded text-orange-300 font-mono">
-                  DEMO_MODE=true
+                  LIVE BACKEND DEMO
                 </span>
               </div>
             </div>
 
-            {/* NEW: Incident Detection Card based on Backend feedback[cite: 31, 34] */}
-            {incidents.length > 0 && (
-              <div
-                className={`p-3 rounded-lg border shadow-lg ${nodeStatus === "FAILED" ? "bg-red-900/30 border-red-700" : "bg-emerald-900/30 border-emerald-700"}`}
+            {/* Incident Detection Card — driven by GET /incidents?exam_id= */}
+            <div
+              className={`p-3 rounded-lg border shadow-lg ${isNodeFailed ? "bg-red-900/30 border-red-700" : "bg-emerald-900/30 border-emerald-700"}`}
+            >
+              <h3
+                className={`text-xs font-bold mb-2 tracking-wider ${isNodeFailed ? "text-red-400" : "text-emerald-400"}`}
               >
-                <h3
-                  className={`text-xs font-bold mb-2 tracking-wider ${nodeStatus === "FAILED" ? "text-red-400" : "text-emerald-400"}`}
-                >
-                  {nodeStatus === "FAILED"
-                    ? "⚠️ INCIDENT DETECTED"
-                    : "✅ INCIDENT STATUS"}
-                </h3>
-                {nodeStatus === "FAILED" ? (
-                  <ul className="text-[11px] space-y-1 text-slate-300">
-                    <li className="text-red-300 font-bold">
-                      • SYSTEM INCIDENT ACTIVE
+                {isNodeFailed
+                  ? "⚠️ INCIDENT DETECTED"
+                  : "✅ INCIDENT STATUS"}
+              </h3>
+              {incidents.length === 0 ? (
+                <ul className="text-[11px] space-y-1 text-slate-300">
+                  <li className="text-emerald-300 font-bold">
+                    • NO INCIDENTS RECORDED
+                  </li>
+                  <li className="text-slate-400 italic">
+                    Node health{" "}
+                    {nodeHealth?.health_state
+                      ? `${nodeHealth.health_state} (${nodeHealth.reason})`
+                      : "syncing…"}
+                  </li>
+                </ul>
+              ) : (
+                <ul className="text-[11px] space-y-1 text-slate-300">
+                  {incidents.map((inc) => (
+                    <li key={inc.id} className="leading-relaxed">
+                      <span
+                        className={
+                          inc.status === "ACTIVE"
+                            ? "text-red-300 font-bold"
+                            : "text-emerald-300 font-bold"
+                        }
+                      >
+                        • INC-{inc.id} · {inc.severity} · {inc.status}
+                      </span>
+                      <div className="text-slate-400 font-mono ml-3">
+                        scope: {inc.affected_session_ids.length} session(s) [
+                        {inc.affected_session_ids.join(", ") || "—"}]
+                      </div>
+                      {inc.root_cause_summary && (
+                        <div className="text-slate-400 ml-3">{inc.root_cause_summary}</div>
+                      )}
+                      {inc.evidence_event_sequence_nos.length > 0 && (
+                        <div className="mt-1 pt-1 border-t border-slate-700/60 text-slate-400 font-mono ml-3">
+                          Evidence seq:{" "}
+                          {inc.evidence_event_sequence_nos.join(", ")}
+                        </div>
+                      )}
                     </li>
-                    <li className="text-red-300 font-bold">
-                      • NODE INCIDENT ACTIVE
-                    </li>
-                    <li className="text-yellow-200">
-                      • 3 CANDIDATE SESSIONS AFFECTED
-                    </li>
-                    <li className="mt-2 pt-2 border-t border-red-800/50 text-slate-400 font-mono">
-                      Evidence: EV-003 EV-004 EV-005
-                    </li>
-                  </ul>
-                ) : (
-                  <ul className="text-[11px] space-y-1 text-slate-300">
-                    <li className="text-emerald-300 font-bold text-[13px]">
-                      5 INCIDENTS RESOLVED
-                    </li>
-                    <li className="text-slate-400 italic">Recovery verified</li>
-                  </ul>
-                )}
-              </div>
-            )}
+                  ))}
+                  <li className="text-slate-400 italic">
+                    {incidents.filter((i) => i.status === "ACTIVE").length} active ·{" "}
+                    {incidents.filter((i) => i.status !== "ACTIVE").length} resolved
+                  </li>
+                </ul>
+              )}
+            </div>
 
             {/* Step 1 & 2: Failure & Recovery Controls */}
             <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700 flex flex-col gap-2">
@@ -510,22 +816,24 @@ export default function App() {
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={handleInjectFailure}
-                  disabled={nodeStatus === "FAILED"}
+                  disabled={isNodeFailed || busyAction !== null}
                   className="bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white font-bold py-2 px-3 rounded text-xs flex items-center justify-center gap-1.5 shadow"
                 >
-                  ⚡ Inject Node Failure
+                  {busyAction === "fail" ? "⏳ Injecting…" : "⚡ Inject Node Failure"}
                 </button>
                 <button
                   onClick={handleRecoverNode}
-                  disabled={nodeStatus === "HEALTHY"}
+                  disabled={!isNodeFailed || busyAction !== null}
                   className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold py-2 px-3 rounded text-xs flex items-center justify-center gap-1.5 shadow"
                 >
-                  🔄 Recover Node & Sync
+                  {busyAction === "recover"
+                    ? "⏳ Reconciling…"
+                    : "🔄 Recover Node & Sync"}
                 </button>
               </div>
             </div>
 
-            {/* Reconciliation Proof (Exact Count Display) */}
+            {/* Reconciliation Proof — counts come from POST /session/{id}/reconcile */}
             {reconciliationLog && (
               <div className="bg-emerald-950/70 border border-emerald-500/50 p-3 rounded-lg">
                 <div className="flex justify-between items-center text-xs font-bold text-emerald-400 border-b border-emerald-800/60 pb-1 mb-2">
@@ -537,24 +845,41 @@ export default function App() {
                 <div className="grid grid-cols-3 gap-2 text-[11px] font-mono text-emerald-200">
                   <div>
                     Local events:{" "}
-                    <strong>{reconciliationLog.localEvents}</strong>
+                    <strong>{reconciliationLog.submitted}</strong>
                   </div>
                   <div>
                     Server events:{" "}
-                    <strong>{reconciliationLog.serverEvents}</strong>
+                    <strong>{reconciliationLog.acknowledged}</strong>
                   </div>
                   <div>
-                    Missing IDs: <strong>{reconciliationLog.missingIds}</strong>
+                    Newly reconciled:{" "}
+                    <strong>{reconciliationLog.newly}</strong>
                   </div>
                   <div>
-                    Duplicate IDs:{" "}
-                    <strong>{reconciliationLog.duplicateIds}</strong>
+                    Missing IDs: <strong>{reconciliationLog.missing}</strong>
                   </div>
-                  <div className="col-span-2">
-                    Payload mismatches:{" "}
-                    <strong>{reconciliationLog.mismatches}</strong>
+                  <div>
+                    Mismatches: <strong>{reconciliationLog.mismatched}</strong>
+                  </div>
+                  <div>
+                    Rejected: <strong>{reconciliationLog.rejected}</strong>
+                  </div>
+                  <div className="col-span-3 text-emerald-300">
+                    Sessions reconciled:{" "}
+                    <strong>
+                      {reconciliationLog.sessionsReconciled}/
+                      {reconciliationLog.sessionsAttempted}
+                    </strong>
                   </div>
                 </div>
+                {reconciliationLog.perSession.some((r) => !r.ok) && (
+                  <div className="mt-2 pt-2 border-t border-emerald-800/60 text-[11px] font-mono text-amber-300">
+                    {reconciliationLog.perSession
+                      .filter((r) => !r.ok)
+                      .map((r) => `session ${r.session_id}: ${r.error}`)
+                      .join(" · ")}
+                  </div>
+                )}
               </div>
             )}
 
@@ -566,26 +891,40 @@ export default function App() {
                 </span>
                 <button
                   onClick={handleGenerateAiReport}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-xs font-semibold"
+                  disabled={busyAction === "ai"}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-2.5 py-1 rounded text-xs font-semibold"
                 >
-                  Generate Report
+                  {busyAction === "ai" ? "Analyzing…" : "Generate Report"}
                 </button>
               </div>
+              {aiError && (
+                <div className="bg-rose-950/60 border border-rose-600 text-rose-300 p-2 rounded text-[11px]">
+                  {aiError}
+                </div>
+              )}
               {aiReport ? (
                 <div className="bg-slate-950 p-2.5 rounded border border-indigo-900/50 text-[11px] text-slate-300 flex flex-col gap-1 leading-relaxed">
                   <div>
+                    <strong className="text-indigo-400">Incident:</strong> INC-
+                    {aiReport.incident_id}
+                  </div>
+                  <div>
                     <strong className="text-indigo-400">Likely Cause:</strong>{" "}
-                    {aiReport.likelyCause}
+                    {aiReport.likely_cause}
                   </div>
                   <div>
                     <strong className="text-indigo-400">Impact:</strong>{" "}
-                    {aiReport.impactSummary}
+                    {aiReport.impact_summary}
                   </div>
-                  <div className="flex gap-1 items-center mt-1">
+                  <div>
+                    <strong className="text-indigo-400">Recommended Response:</strong>{" "}
+                    {aiReport.recommended_response}
+                  </div>
+                  <div className="flex gap-1 items-center mt-1 flex-wrap">
                     <strong className="text-indigo-400">Evidence Refs:</strong>
-                    {aiReport.evidenceRefs.map((ref, idx) => (
+                    {aiReport.evidence_refs.map((ref) => (
                       <span
-                        key={idx}
+                        key={ref}
                         className="bg-indigo-950 border border-indigo-600 text-indigo-300 px-1 rounded text-[10px] font-mono"
                       >
                         {ref}
@@ -594,9 +933,11 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="text-[11px] text-slate-500 italic">
-                  No report generated yet. Click button after failure.
-                </div>
+                !aiError && (
+                  <div className="text-[11px] text-slate-500 italic">
+                    No report generated yet. Click button after failure.
+                  </div>
+                )
               )}
             </div>
 
@@ -608,38 +949,55 @@ export default function App() {
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={handleVerifyAudit}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded text-xs"
+                  disabled={busyAction === "audit"}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-bold py-1.5 px-3 rounded text-xs"
                 >
-                  🛡️ Verify Audit Chain
+                  {busyAction === "audit" ? "🛡️ Verifying…" : "🛡️ Verify Audit Chain"}
                 </button>
                 <button
                   onClick={handleSimulateTampering}
-                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 px-3 rounded text-xs"
+                  disabled={busyAction === "tamper"}
+                  className="bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white font-bold py-1.5 px-3 rounded text-xs"
                 >
-                  ⚠️ Simulate Tampering
+                  {busyAction === "tamper" ? "⚠️ Tampering…" : "⚠️ Simulate Tampering"}
                 </button>
               </div>
 
-              {auditStatus && (
+              {tamperResult && (
+                <div className="p-2.5 rounded border border-amber-500/50 bg-amber-950/60 text-[11px] text-amber-300 font-mono">
+                  Tampered sequence_no:{" "}
+                  <strong>{tamperResult.tampered_sequence_no}</strong> (field:{" "}
+                  {tamperResult.field}) — {tamperResult.detail}
+                </div>
+              )}
+
+              {auditResult && (
                 <div
-                  className={`p-2.5 rounded border text-xs flex flex-col gap-1 ${auditStatus === "VALID" ? "bg-emerald-950/60 border-emerald-500 text-emerald-300" : "bg-rose-950/70 border-rose-500 text-rose-300"}`}
+                  className={`p-2.5 rounded border text-xs flex flex-col gap-1 ${auditResult.valid ? "bg-emerald-950/60 border-emerald-500 text-emerald-300" : "bg-rose-950/70 border-rose-500 text-rose-300"}`}
                 >
                   <div className="flex justify-between items-center font-bold font-mono">
                     <span>Audit Status:</span>
                     <span
                       className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider text-white"
                       style={{
-                        background:
-                          auditStatus === "VALID" ? "#059669" : "#dc2626",
+                        background: auditResult.valid ? "#059669" : "#dc2626",
                       }}
                     >
                       {auditStatus}
                     </span>
                   </div>
-                  {/* Updated Tamper text to match backend exact requirement[cite: 31, 34] */}
-                  {tamperedEvent && auditStatus === "INVALID" && (
-                    <div className="text-[11px] text-rose-300 mt-1 border-t border-rose-900/60 pt-1 font-mono">
-                      First broken event: <strong>{tamperedEvent}</strong>
+                  <div className="text-[11px] font-mono">
+                    Events checked: <strong>{auditResult.events_checked}</strong>
+                  </div>
+                  <div className="text-[11px] font-mono">
+                    First broken sequence_no:{" "}
+                    <strong>
+                      {auditResult.first_broken_sequence_no ?? "none"}
+                    </strong>
+                  </div>
+                  {auditResult.failure_reason && (
+                    <div className="text-[11px] font-mono border-t border-rose-900/60 pt-1">
+                      Failure reason: {auditResult.failure_reason}
                     </div>
                   )}
                 </div>

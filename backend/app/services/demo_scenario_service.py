@@ -6,7 +6,7 @@ incident-detection, audit or AI-grounding semantics.
 
 create_demo_scenario
 --------------------
-Creates exactly one exam, one HEALTHY node, three candidates and three
+Creates exactly one exam, one HEALTHY node, three candidates and 15
 questions. It deliberately creates **no sessions**: sessions must still be
 started through ``POST /session/start`` so that the ordinary
 ``SESSION_STARTED`` events are produced by the real code path. Nothing is
@@ -35,7 +35,7 @@ from app.db.session import Session
 from app.services import audit_service, health_service, incident_service
 
 CANDIDATE_COUNT = 3
-QUESTION_COUNT = 3
+QUESTION_COUNT = 15
 
 _HEALTHY = NodeStatus.HEALTHY.value
 
@@ -52,7 +52,7 @@ def _unique_suffix(db: DbSession) -> str:
 
 
 def create_demo_scenario(db: DbSession) -> dict[str, Any]:
-    """Create one exam + one HEALTHY node + 3 candidates + 3 questions.
+    """Create one exam + one HEALTHY node + 3 candidates + 15 questions.
 
     No Session rows and no Event rows are created: the demo must go through
     ``POST /session/start`` so the normal SESSION_STARTED path is exercised.

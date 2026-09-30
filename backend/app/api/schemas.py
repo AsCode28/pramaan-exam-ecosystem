@@ -299,7 +299,7 @@ class AIAnalysisResponse(BaseModel):
 
 
 class DemoScenarioCreateResponse(BaseModel):
-    """One demo exam with exactly one node, 3 candidates and 3 questions.
+    """One demo exam with exactly one node, 3 candidates and 15 questions.
 
     No sessions are created: the demo must call POST /session/start so the
     normal SESSION_STARTED event path is exercised.

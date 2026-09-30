@@ -193,7 +193,7 @@ def mock_gemini(monkeypatch, evidence_refs):
 
 
 def test_create_scenario_returns_expected_shape(client):
-    """Exactly one exam, one node, three candidates and three questions."""
+    """Exactly one exam, one node, three candidates and 15 questions."""
     tc, factory = client
     s = create_scenario(tc)
 
@@ -201,14 +201,14 @@ def test_create_scenario_returns_expected_shape(client):
     assert isinstance(s["exam_id"], int)
     assert isinstance(s["node_id"], int)
     assert len(s["candidate_ids"]) == 3
-    assert len(s["question_ids"]) == 3
+    assert len(s["question_ids"]) == 15
     assert len(set(s["candidate_ids"])) == 3
-    assert len(set(s["question_ids"])) == 3
+    assert len(set(s["question_ids"])) == 15
 
     assert count(factory, Exam) == 1
     assert count(factory, Node) == 1
     assert count(factory, Candidate) == 3
-    assert count(factory, Question) == 3
+    assert count(factory, Question) == 15
 
 
 def test_create_scenario_node_is_healthy(client):
@@ -266,7 +266,7 @@ def test_create_scenario_is_additive_and_does_not_delete(client):
     assert count(factory, Exam) == 2
     assert count(factory, Node) == 2
     assert count(factory, Candidate) == 6
-    assert count(factory, Question) == 6
+    assert count(factory, Question) == 30
     # The first scenario's session and its event survive untouched.
     assert count(factory, Session) == 1
     assert event_types(factory) == ["SESSION_STARTED"]
